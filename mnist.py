@@ -153,26 +153,36 @@ class Learner():
 
     # Optional batch size bs chops up the calculation
     # into feasible sizes for large datasets on large models.
-    def classify(self, x, bs=None, softmax=False):
+    #   mode==plain: each prediction is a label
+    #   mode==softmax: each prediction is a probability distribution over the labels
+    #   mode==raw: each prediction is the raw output from the net, a pre-softmax vector
+    def classify(self, x, bs=None, mode="plain"):
         if bs is None: bs = len(x)
         batches = []
         frm = 0
-        #x = torch.tensor(x).to("cuda")
-        x = torch.tensor(x)
+        self.net.eval()
         while True:
             to = min(frm + bs, len(x))
-            # y = F.softmax( self.net.eval()(x[frm:to]).to("cuda"), 1 )
-            y = F.softmax( self.net.eval()(x[frm:to].to("cuda")), 1 )
+            xt = torch.tensor(x[frm:to]).to("cuda")
+            y = self.net(xt)
+            if mode=="softmax":
+                y = F.softmax(y, 1)
             batches.append(y.cpu().detach().numpy())
             frm = to
             if to == len(x): break
+
         y = np.concatenate(batches)
-
-        if softmax is True:
-            return y
-        else:
+        if mode=="plain":
             return np.argmax(y, 1)
+        else:
+            return y
 
+    def get_loss(self, x, labels, bs=None):
+        y = self.classify(x, bs=bs, mode="raw")
+        yt = torch.tensor(y).to("cuda")
+        labelst = torch.from_numpy(labels).to("cuda")
+        ce_loss = self.loss(yt, labelst)
+        return ce_loss.data.item()
 
     def request_stop(self):
         self.stop_requested = True
@@ -213,13 +223,6 @@ class Learner():
             self.optimizer.zero_grad()
             ce_loss.backward()
             self.optimizer.step()
-
-            # dict = {self.x: xs, self.y: ys,
-            #         self.keep_prob: self.training_keep_prob,
-            #         self.is_training: True,
-            #         self.rate : learning_rate,
-            #         self.mom : momentum}
-            # _, loss, rate, mom = sess.run([self.optimizer, self.loss, self.rate, self.mom], feed_dict=dict)
 
             callback.on_train_step(i, ce_loss.data.item(), learning_rate, momentum, xs, ys, report_every)
 
@@ -344,7 +347,8 @@ def accuracy(predictions, actual):
 
 def accuracy_report(learner, images, labels, tag, bs=None):
     acc = accuracy(learner.classify(images, bs=bs), labels)
-    print(f"{tag}: accuracy = {percent(acc)}")
+    lss = learner.get_loss(images, labels, bs=bs)
+    print(f"{tag}: loss = {lss:.3g}, accuracy = {percent(acc)}")
 
 def lr_find(learner, bs, batches=500, decades=6, start=0.0001, steps=500, **kwargs):
     recorder = LR_Callback(learner)
@@ -366,14 +370,15 @@ def main():
     nn = LearnerV2_a(data)
     params = {'epochs': 4, 'bs': 64, 'lrmin': 1.875e-05, 'lrmax': 6.25e-4}
     cb = one_cycle(nn, **params)
+    cb = one_cycle(nn, **params)
     
-    stepsize = data.epochs_to_batches(params['epochs'], params['bs'])
-    plt.plot(cb.losses[:stepsize])
-    plt.grid(True)
-    plt.show()
-    plt.plot(cb.losses[stepsize:])
-    plt.grid(True)
-    plt.show()
+    # stepsize = data.epochs_to_batches(params['epochs'], params['bs'])
+    # plt.plot(cb.losses[:stepsize])
+    # plt.grid(True)
+    # plt.show()
+    # plt.plot(cb.losses[stepsize:])
+    # plt.grid(True)
+    # plt.show()
 
     print("That's all Folks!")
 

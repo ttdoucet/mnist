@@ -52,6 +52,15 @@ class MNIST_DataSet():
         return self.mnist.test.labels.astype("int64")
     
     @property
+    def train_images(self):
+        imgs = self.mnist.train.images
+        return imgs.reshape(imgs.shape[0], -1, 28, 28)
+
+    @property
+    def train_labels(self):
+        return self.mnist.train.labels.astype("int64")
+
+    @property
     def epoch_size(self):
         return len(self.mnist.train.labels)
     def epochs_to_batches(self, epochs, bs):
@@ -97,11 +106,20 @@ class StandardCallback(Callback):
         self.rates =  []
 
     def report(self):
-        accuracy_report(self.learner, self.learner.dataset.validation_images,
-                        self.learner.dataset.validation_labels, "  validation", bs=64)
-        accuracy_report(self.learner, self.learner.dataset.test_images,
-                        self.learner.dataset.test_labels, "        test", bs=64)
+        def accuracy_report(images, labels, tag, bs=None):
+            acc = accuracy(self.learner.classify(images, bs=bs), labels)
+            lss = self.learner.get_loss(images, labels, bs=bs)
+            print(f"{tag}: loss = {lss:.3g}, accuracy = {percent(acc)}")
 
+        accuracy_report(self.learner.dataset.validation_images,
+                        self.learner.dataset.validation_labels,
+                        "  validation", bs=500)
+        accuracy_report(self.learner.dataset.test_images,
+                        self.learner.dataset.test_labels,
+                        "        test", bs=500)
+        # accuracy_report(self.learner.dataset.train_images,
+        #                 self.learner.dataset.train_labels,
+        #                 "       train", bs=500)
         
     def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
         self.losses.append(loss)
@@ -120,9 +138,10 @@ class StandardCallback(Callback):
         self.report()
 
 class AugmentedStandardCallback(StandardCallback):
-    def __init__(self, learner):
+    def __init__(self, learner, every=40):
         self.learner = learner
         super().__init__(learner)
+        self.every = every
 
     def on_train_begin(self):
         super().on_train_begin()
@@ -132,11 +151,26 @@ class AugmentedStandardCallback(StandardCallback):
     def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
         super().on_train_step(step, loss, rate, mom, xs, ys, report_every)
         # expensive, use for collecting when needed
-        l, a = self.learner.get_loss(self.learner.dataset.validation)
-        self.vlosses.append(l)
-        self.acc.append(a)
+        if (step % self.every) == 0:
+            l = self.learner.get_loss(self.learner.dataset.validation_images,
+                                      self.learner.dataset.validation_labels,
+                                      bs=500)
+            self.vlosses.append(l)
+
         
     def on_train_end(self):
+        def plotit(losses, xoffset):
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            ax.plot(self.every * (xoffset + np.arange(len(losses))), losses)
+            ax.grid(True)
+            ax.set_ylabel("validation loss")
+            ax.set_xlabel("step")
+            plt.show()
+
+        half = len(self.vlosses) // 2
+        plotit(self.vlosses[:half], 0)
+        plotit(self.vlosses[half:], half)
         super().on_train_end()
 
 
@@ -345,11 +379,6 @@ def error_rate(predictions, actual):
 def accuracy(predictions, actual):
     return 1.0 - error_rate(predictions, actual)
 
-def accuracy_report(learner, images, labels, tag, bs=None):
-    acc = accuracy(learner.classify(images, bs=bs), labels)
-    lss = learner.get_loss(images, labels, bs=bs)
-    print(f"{tag}: loss = {lss:.3g}, accuracy = {percent(acc)}")
-
 def lr_find(learner, bs, batches=500, decades=6, start=0.0001, steps=500, **kwargs):
     recorder = LR_Callback(learner)
     lr = exponential_rise(start, decades, steps)
@@ -362,24 +391,44 @@ def lr_find(learner, bs, batches=500, decades=6, start=0.0001, steps=500, **kwar
     plt.show()
     return recorder
 
+def one_hot(d, cols=10):
+    b = np.zeros([d.shape[0], cols])
+    b[np.arange(b.shape[0]), d] = 1
+    return b
+
+def vote(classifiers, n_classes, data):
+    r = np.zeros([data.shape[0], n_classes])
+    for cl in classifiers:
+        #r += cl.classify(data, bs=5000, mode="softmax")
+        r += one_hot(cl.classify(data, bs=500))
+    return np.argmax(r, axis=1)
+
+def voting_classifier(classifiers, n_classes):
+    return lambda data : vote(classifiers, n_classes, data)
+
+def committee(data, classifiers):
+    vclass = voting_classifier(classifiers, 10)
+    acc = accuracy(vclass(data.test_images), data.test_labels)
+    print("committee test accuracy:", 100 * acc)
+    return acc
+
+
 def main():
     data = MNIST_DataSet("MNIST_data/")
     # nn = LearnerV2_a(data)
     # lr_find(nn, bs=64, start=1e-8, decades=9)
 
-    nn = LearnerV2_a(data)
-    params = {'epochs': 4, 'bs': 64, 'lrmin': 1.875e-05, 'lrmax': 6.25e-4}
-    cb = one_cycle(nn, **params)
-    cb = one_cycle(nn, **params)
-    
-    # stepsize = data.epochs_to_batches(params['epochs'], params['bs'])
-    # plt.plot(cb.losses[:stepsize])
-    # plt.grid(True)
-    # plt.show()
-    # plt.plot(cb.losses[stepsize:])
-    # plt.grid(True)
-    # plt.show()
+    params = {'epochs': 3, 'bs': 64, 'lrmin': 1.875e-05, 'lrmax': 6.25e-4}
 
+    learner = LearnerV2_a
+    classifiers = [learner(data) for i in range(5)]
+
+    for classifier in classifiers:
+        one_cycle(classifier, **params)
+
+    committee(data, classifiers)
+
+    
     print("That's all Folks!")
 
 

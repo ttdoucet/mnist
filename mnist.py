@@ -113,10 +113,10 @@ class StandardCallback(Callback):
 
         accuracy_report(self.learner.dataset.validation_images,
                         self.learner.dataset.validation_labels,
-                        "  validation", bs=500)
+                        "  validation", bs=50)
         accuracy_report(self.learner.dataset.test_images,
                         self.learner.dataset.test_labels,
-                        "        test", bs=500)
+                        "        test", bs=50)
         # accuracy_report(self.learner.dataset.train_images,
         #                 self.learner.dataset.train_labels,
         #                 "       train", bs=500)
@@ -157,7 +157,6 @@ class AugmentedStandardCallback(StandardCallback):
                                       bs=500)
             self.vlosses.append(l)
 
-        
     def on_train_end(self):
         def plotit(losses, xoffset):
             fig = plt.figure()
@@ -172,7 +171,6 @@ class AugmentedStandardCallback(StandardCallback):
         plotit(self.vlosses[:half], 0)
         plotit(self.vlosses[half:], half)
         super().on_train_end()
-
 
 class Learner():
     def __init__(self, dataset, name=None, init=False):
@@ -221,7 +219,7 @@ class Learner():
     def request_stop(self):
         self.stop_requested = True
         
-    def train(self, epochs=None, batches=1, bs=1, lr=0.03, p=0.90, report_every=100, callback=None, save=True, **kwargs):
+    def train(self, epochs=None, batches=1, bs=1, lr=0.03, p=0.90, report_every=100, callback=None, **kwargs):
 
         self.stop_requested = False;
         if callback is None:
@@ -245,13 +243,12 @@ class Learner():
                 # specific to Adam
                 betas = param_group['betas']
                 param_group['betas'] = (momentum, betas[1])
-                #print("param lr:", param_group['lr'])
-                #print("param betas:", param_group['betas'])
 
             xs, ys = self.dataset.next_batch(bs)
             batch = torch.from_numpy(xs).to("cuda")
             labels = torch.from_numpy(ys).to("cuda")
 
+            self.net.train() # did i forget this?
             pred = self.net(batch)
             ce_loss = self.loss(pred, labels)
             self.optimizer.zero_grad()
@@ -262,7 +259,6 @@ class Learner():
 
         callback.on_train_end()
         return callback
-   # end train()
 # end class Learner()
 
 
@@ -286,40 +282,105 @@ class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.size()[0], -1)
 
+
+class Recorder(nn.Module):
+    def __init__(self, dest=None):
+        super().__init__()
+        self.dest = dest
+
+    def forward(self, x):
+        self.x = x.detach()
+        if self.dest is not None:
+            self.dest[0] = x
+        return x
+
 class LearnerV2_a(Learner):
     def __init__(self, dataset, name=None, init=False):
         super().__init__(dataset, name, init)
+        self.decoder = self.model_dec().to("cuda")
+
+    dvec = [None] # debugging
+
+    def train_decoder(self, epochs=None, batches=1, bs=1, lr=0.03, p=0.90, report_every=100, callback=None, **kwargs):
+
+        loss = nn.MSELoss()
+        optimizer = optim.Adam(self.decoder.parameters(), lr=lr, eps=1e-8, betas=(p, 0.99), weight_decay=0)
+
+        if epochs is not None:
+            batches = self.dataset.epochs_to_batches(epochs, bs)
+        print("epochs: {}, batches: {}, batch_size: {}".format(epochs, batches, bs))
+
+        for i in range(batches):
+
+            xs, ys = self.dataset.next_batch(bs)
+            batch = torch.from_numpy(xs).to("cuda")
+            labels = torch.from_numpy(ys).to("cuda")
+
+            self.net.eval()
+            self.decoder.train()
+            self.net(batch.to("cuda"))
+            input_dec = self.dvec[0]
+            reconst = self.decoder(input_dec.to("cuda"))
+            decoder_loss = loss(reconst.view(-1, 1, 28, 28), batch)
+            if (i % 25) == 0:
+                print(f"{i}: loss={decoder_loss}")
+            optimizer.zero_grad()
+            decoder_loss.backward()
+            optimizer.step()
+
+    def reconstruct(self, batch):
+        self.net.eval()
+        self.decoder.eval()
+        x = self.net(torch.tensor(batch).cuda())
+        xr = self.decoder(self.dvec[0])
+        return xr.view(-1,1,28,28).cpu().detach().numpy()
 
     def model(self):
         v = nn.Sequential(
                 nn.Conv2d(in_channels=1, out_channels=128, kernel_size=5, padding=2),
                 nn.ReLU(),
+                Recorder(),
 
                 Residual(128),
                 nn.MaxPool2d(2),
                 Residual(128),
+                Recorder(),
 
                 nn.BatchNorm2d(128, **bn_params),
                 nn.Conv2d(128, 256, 3, padding=1),
                 nn.ReLU(),
                 nn.MaxPool2d(2),
                 Residual(256),
+                Recorder(),
 
                 nn.BatchNorm2d(256, **bn_params),
                 nn.Conv2d(256, 512, 3, padding=1),
                 nn.ReLU(),
                 nn.MaxPool2d(2, ceil_mode=True),
                 Residual(512),
+                Recorder(),
 
                 nn.BatchNorm2d(512, **bn_params),
                 nn.AvgPool2d(kernel_size=4),
                 Flatten(),
+                Recorder(dest=self.dvec),
                 nn.Linear(512,10),
-                # nn.Softmax(1)
+                # Softmax provided during training.
         )
         return v
+
+    def model_dec(self):
+        return nn.Sequential(
+                    nn.Linear(512, 1024),
+                    nn.ReLU(),
+                    nn.Linear(1024, 28 * 28),
+                    nn.Sigmoid()
+               )
+
+
+
     # end of model()
-# end class LearnerV2_A()
+# end class LearnerV2_a()
 
 def exponential_decay(v, half_life):
     return lambda n: v * np.power(1/2, n/half_life)
@@ -358,8 +419,10 @@ def show_image(v, title=None):
     img = plt.imshow(vv, cmap="Greys", )
 
 def plot_images(batch, title=None):
-    batch = batch.numpy()
-    batch = batch.reshape(-1, 28, 28)
+    if type(batch) != np.ndarray:
+        batch = batch.cpu().detach().numpy()
+    n = batch.shape[-1]
+    batch = batch.reshape(-1, n, n)
     n = batch.shape[0]
     s = int(math.sqrt(n) + 0.5)
     if (s*s < n):
@@ -382,7 +445,7 @@ def accuracy(predictions, actual):
 def lr_find(learner, bs, batches=500, decades=6, start=0.0001, steps=500, **kwargs):
     recorder = LR_Callback(learner)
     lr = exponential_rise(start, decades, steps)
-    learner.train(epochs=None, batches=steps, bs=bs, lr=lr, callback=recorder, save=False, **kwargs)
+    learner.train(epochs=None, batches=steps, bs=bs, lr=lr, callback=recorder, **kwargs)
     #learner.restore()
     plt.semilogx(recorder.rates, recorder.losses)
     plt.xlabel("Learning Rate")
@@ -418,18 +481,39 @@ def main():
     # nn = LearnerV2_a(data)
     # lr_find(nn, bs=64, start=1e-8, decades=9)
 
-    params = {'epochs': 3, 'bs': 64, 'lrmin': 1.875e-05, 'lrmax': 6.25e-4}
+    # params = {'epochs': 4, 'bs': 64, 'lrmin': 3e-05, 'lrmax': 1e-3}
+    params = {'epochs': 4, 'bs': 64, 'lrmin': 1.875e-05, 'lrmax': 0.000625}
 
     learner = LearnerV2_a
-    classifiers = [learner(data) for i in range(5)]
+    classifiers = [learner(data) for i in range(10)]
 
     for classifier in classifiers:
         one_cycle(classifier, **params)
 
     committee(data, classifiers)
-
     
     print("That's all Folks!")
+
+def from_notebook():
+    def nml(t):
+        return (t - t.mean()) / t.std()
+
+    data = MNIST_DataSet("MNIST_data/")
+
+    lnn = LearnerV2_a(data)
+    one_cycle(lnn, epochs=4, bs=64, lrmin=3e-5, lrmax=1e-3)
+
+    lnn.train_decoder(epochs=5, bs=64, lr=0.001)
+
+    imgs = data.validation_images[2000:2036]
+    labels = data.validation_labels[2000:2036]
+    plot_images(imgs)
+    print(labels)
+    print(lnn.classify(imgs))
+
+    dimg = lnn.reconstruct(imgs)
+    dimg = nml(dimg)
+    plot_images(dimg)
 
 
 if __name__ == "__main__":

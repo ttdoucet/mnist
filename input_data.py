@@ -26,7 +26,7 @@ import os
 import numpy
 from six.moves import urllib
 from six.moves import xrange  # pylint: disable=redefined-builtin
-import tensorflow as tf
+#import tensorflow as tf
 
 SOURCE_URL = 'http://yann.lecun.com/exdb/mnist/'
 
@@ -95,15 +95,15 @@ def extract_labels(filename, one_hot=False):
 class DataSet(object):
 
   def __init__(self, images, labels, fake_data=False, one_hot=False,
-               dtype=tf.float32):
+               dtype=numpy.float32):
     """Construct a DataSet.
 
     one_hot arg is used only if fake_data is true.  `dtype` can be either
     `uint8` to leave the input as `[0, 255]`, or `float32` to rescale into
     `[0, 1]`.
     """
-    dtype = tf.as_dtype(dtype).base_dtype
-    if dtype not in (tf.uint8, tf.float32):
+    #dtype = numpy.as_dtype(dtype).base_dtype
+    if dtype not in (numpy.uint8, numpy.float32):
       raise TypeError('Invalid image dtype %r, expected uint8 or float32' %
                       dtype)
     if fake_data:
@@ -120,7 +120,7 @@ class DataSet(object):
       assert images.shape[3] == 1
       images = images.reshape(images.shape[0],
                               images.shape[1] * images.shape[2])
-      if dtype == tf.float32:
+      if dtype == numpy.float32:
         # Convert from [0, 255] -> [0.0, 1.0].
         images = images.astype(numpy.float32)
         images = numpy.multiply(images, 1.0 / 255.0)
@@ -173,7 +173,7 @@ class DataSet(object):
     return self._images[start:end], self._labels[start:end]
 
 
-def read_data_sets(train_dir, fake_data=False, one_hot=False, dtype=tf.float32):
+def read_data_sets(train_dir, fake_data=False, one_hot=False, dtype=numpy.float32):
   class DataSets(object):
     pass
   data_sets = DataSets()

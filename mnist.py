@@ -105,21 +105,21 @@ class StandardCallback(Callback):
         self.losses = []
         self.rates =  []
 
-    def report(self):
-        def accuracy_report(images, labels, tag, bs=None):
-            acc = accuracy(self.learner.classify(images, bs=bs), labels)
-            lss = self.learner.get_loss(images, labels, bs=bs)
-            print(f"{tag}: loss = {lss:.3g}, accuracy = {percent(acc)}")
+    def accuracy_report(self, images, labels, tag, bs):
+        acc = accuracy(self.learner.classify(images, bs=bs), labels)
+        lss = self.learner.get_loss(images, labels, bs=bs)
+        print(f"{tag}: loss = {lss:.3g}, accuracy = {percent(acc)}")
 
-        accuracy_report(self.learner.dataset.validation_images,
-                        self.learner.dataset.validation_labels,
-                        "  validation", bs=50)
-        accuracy_report(self.learner.dataset.test_images,
-                        self.learner.dataset.test_labels,
-                        "        test", bs=50)
-        # accuracy_report(self.learner.dataset.train_images,
-        #                 self.learner.dataset.train_labels,
-        #                 "       train", bs=500)
+    def report(self):
+        self.accuracy_report(self.learner.dataset.validation_images,
+                             self.learner.dataset.validation_labels,
+                             "  validation", bs=50)
+        # self.accuracy_report(self.learner.dataset.test_images,
+        #                     self.learner.dataset.test_labels,
+        #                     "        test", bs=50)
+        # self.accuracy_report(self.learner.dataset.train_images,
+        #                     self.learner.dataset.train_labels,
+        #                     "       train", bs=500)
         
     def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
         self.losses.append(loss)
@@ -136,6 +136,10 @@ class StandardCallback(Callback):
     def on_train_end(self):
         print("training ends")
         self.report()
+        self.accuracy_report(self.learner.dataset.test_images,
+                             self.learner.dataset.test_labels,
+                             "        test", bs=50)
+
 
 class AugmentedStandardCallback(StandardCallback):
     def __init__(self, learner, every=40):
@@ -178,7 +182,7 @@ class Learner():
         self.stop_requested = False
         self.net = self.model().to("cuda")
         self.loss = nn.CrossEntropyLoss()
-        self.optimizer = optim.Adam(self.net.parameters(), lr=6.25e-4, eps=1e-8, betas=(0.95, 0.99), weight_decay=0)
+        self.optimizer = optim.Adam(self.net.parameters(), lr=6.25e-4, eps=1e-8, betas=(0.90, 0.99), weight_decay=0)
 
     def model(self):
         raise NotImplementedError
@@ -248,7 +252,8 @@ class Learner():
             batch = torch.from_numpy(xs).to("cuda")
             labels = torch.from_numpy(ys).to("cuda")
 
-            self.net.train() # did i forget this?
+            self.net.train()
+
             pred = self.net(batch)
             ce_loss = self.loss(pred, labels)
             self.optimizer.zero_grad()
@@ -283,104 +288,48 @@ class Flatten(nn.Module):
         return x.view(x.size()[0], -1)
 
 
-class Recorder(nn.Module):
-    def __init__(self, dest=None):
-        super().__init__()
-        self.dest = dest
-
-    def forward(self, x):
-        self.x = x.detach()
-        if self.dest is not None:
-            self.dest[0] = x
-        return x
-
 class LearnerV2_a(Learner):
     def __init__(self, dataset, name=None, init=False):
         super().__init__(dataset, name, init)
-        self.decoder = self.model_dec().to("cuda")
-
-    dvec = [None] # debugging
-
-    def train_decoder(self, epochs=None, batches=1, bs=1, lr=0.03, p=0.90, report_every=100, callback=None, **kwargs):
-
-        loss = nn.MSELoss()
-        optimizer = optim.Adam(self.decoder.parameters(), lr=lr, eps=1e-8, betas=(p, 0.99), weight_decay=0)
-
-        if epochs is not None:
-            batches = self.dataset.epochs_to_batches(epochs, bs)
-        print("epochs: {}, batches: {}, batch_size: {}".format(epochs, batches, bs))
-
-        for i in range(batches):
-
-            xs, ys = self.dataset.next_batch(bs)
-            batch = torch.from_numpy(xs).to("cuda")
-            labels = torch.from_numpy(ys).to("cuda")
-
-            self.net.eval()
-            self.decoder.train()
-            self.net(batch.to("cuda"))
-            input_dec = self.dvec[0]
-            reconst = self.decoder(input_dec.to("cuda"))
-            decoder_loss = loss(reconst.view(-1, 1, 28, 28), batch)
-            if (i % 25) == 0:
-                print(f"{i}: loss={decoder_loss}")
-            optimizer.zero_grad()
-            decoder_loss.backward()
-            optimizer.step()
-
-    def reconstruct(self, batch):
-        self.net.eval()
-        self.decoder.eval()
-        x = self.net(torch.tensor(batch).cuda())
-        xr = self.decoder(self.dvec[0])
-        return xr.view(-1,1,28,28).cpu().detach().numpy()
 
     def model(self):
         v = nn.Sequential(
                 nn.Conv2d(in_channels=1, out_channels=128, kernel_size=5, padding=2),
                 nn.ReLU(),
-                Recorder(),
 
                 Residual(128),
                 nn.MaxPool2d(2),
                 Residual(128),
-                Recorder(),
 
                 nn.BatchNorm2d(128, **bn_params),
                 nn.Conv2d(128, 256, 3, padding=1),
                 nn.ReLU(),
                 nn.MaxPool2d(2),
                 Residual(256),
-                Recorder(),
 
                 nn.BatchNorm2d(256, **bn_params),
                 nn.Conv2d(256, 512, 3, padding=1),
                 nn.ReLU(),
                 nn.MaxPool2d(2, ceil_mode=True),
                 Residual(512),
-                Recorder(),
 
                 nn.BatchNorm2d(512, **bn_params),
                 nn.AvgPool2d(kernel_size=4),
                 Flatten(),
-                Recorder(dest=self.dvec),
                 nn.Linear(512,10),
                 # Softmax provided during training.
         )
         return v
 
-    def model_dec(self):
-        return nn.Sequential(
-                    nn.Linear(512, 1024),
-                    nn.ReLU(),
-                    nn.Linear(1024, 28 * 28),
-                    nn.Sigmoid()
-               )
-
-
-
     # end of model()
 # end class LearnerV2_a()
+
+def normalise(t):
+    b, c, x, y = t.shape
+    t = t.view(b, -1)
+    t = t - t.mean(dim=1, keepdim=True)
+    t = t / t.std(dim=1, keepdim=True, unbiased=False)
+    return t.view(b, c, x, y)
 
 def exponential_decay(v, half_life):
     return lambda n: v * np.power(1/2, n/half_life)
@@ -475,46 +424,19 @@ def committee(data, classifiers):
     print("committee test accuracy:", 100 * acc)
     return acc
 
-
 def main():
     data = MNIST_DataSet("MNIST_data/")
-    # nn = LearnerV2_a(data)
-    # lr_find(nn, bs=64, start=1e-8, decades=9)
-
-    # params = {'epochs': 4, 'bs': 64, 'lrmin': 3e-05, 'lrmax': 1e-3}
-    params = {'epochs': 4, 'bs': 64, 'lrmin': 1.875e-05, 'lrmax': 0.000625}
 
     learner = LearnerV2_a
     classifiers = [learner(data) for i in range(10)]
 
+    params = {'epochs': 4, 'bs': 64, 'lrmin': 2e-05, 'lrmax': 0.0006}
     for classifier in classifiers:
         one_cycle(classifier, **params)
 
     committee(data, classifiers)
     
     print("That's all Folks!")
-
-def from_notebook():
-    def nml(t):
-        return (t - t.mean()) / t.std()
-
-    data = MNIST_DataSet("MNIST_data/")
-
-    lnn = LearnerV2_a(data)
-    one_cycle(lnn, epochs=4, bs=64, lrmin=3e-5, lrmax=1e-3)
-
-    lnn.train_decoder(epochs=5, bs=64, lr=0.001)
-
-    imgs = data.validation_images[2000:2036]
-    labels = data.validation_labels[2000:2036]
-    plot_images(imgs)
-    print(labels)
-    print(lnn.classify(imgs))
-
-    dimg = lnn.reconstruct(imgs)
-    dimg = nml(dimg)
-    plot_images(dimg)
-
 
 if __name__ == "__main__":
     main()

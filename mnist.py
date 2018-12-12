@@ -9,65 +9,45 @@ import input_data
 import matplotlib.pyplot as plt
 import math
 
-class MNIST_DataSet():
-    image_size = 28
-    n_labels = 10
+class Batcher:
+    def __init__(self, n):
+        self.n = n
 
-    @staticmethod
-    def normalize(batch):
-        mean = np.mean(batch, axis=1).reshape(-1,1)
-        std = np.std(batch, axis=1).reshape(-1,1)
-        return (batch - mean) / std
+    def batches(self, epochs=1, bs=None, shuffle=True):
+        if bs is None:
+            bs = self.n
+        perm = np.arange(self.n)
+        for epoch in range(epochs):
+            if shuffle:
+                np.random.shuffle(perm)
+            for b in range(self.n // bs):
+                yield perm[b*bs : (b+1)*bs]
 
-    def __init__(self, path, normalize=True):
-        self.mnist = input_data.read_data_sets(path, one_hot=False)
+class DataSet:
+    def __init__(self, data, labels):
+        self.data = data
+        self.labels = labels
+        self.batcher = Batcher(len(labels))
 
-        if normalize is True:
-            # This is kind of unholy but I want to do it only once.
-            self.mnist.train._images = self.normalize(self.mnist.train._images)
-            self.mnist.validation._images = self.normalize(self.mnist.validation._images)
-            self.mnist.test._images = self.normalize(self.mnist.test._images)
+    def batches(self, epochs=1, bs=None, shuffle=True):
+        for perm in self.batcher.batches(epochs, bs, shuffle):
+            yield (self.data[perm], self.labels[perm])
 
-    def next_batch(self, n):
-        batch, labels = self.mnist.train.next_batch(n)
-        b = batch.reshape([n, -1, 28, 28])
-        return (b, labels.astype("int64"))
-
-    @property
-    def validation_images(self):
-        imgs = self.mnist.validation.images
-        return imgs.reshape(imgs.shape[0], -1, 28, 28)
-
-    @property
-    def validation_labels(self):
-        return self.mnist.validation.labels.astype("int64")
-
-    @property
-    def test_images(self):
-        imgs = self.mnist.test.images
-        return imgs.reshape(imgs.shape[0], -1, 28, 28)
-
-    @property
-    def test_labels(self):
-        return self.mnist.test.labels.astype("int64")
-    
-    @property
-    def train_images(self):
-        imgs = self.mnist.train.images
-        return imgs.reshape(imgs.shape[0], -1, 28, 28)
-
-    @property
-    def train_labels(self):
-        return self.mnist.train.labels.astype("int64")
-
-    @property
-    def epoch_size(self):
-        return len(self.mnist.train.labels)
     def epochs_to_batches(self, epochs, bs):
-        return self.divide_round_up(epochs * self.epoch_size, bs)
-    @staticmethod
-    def divide_round_up(n, d):
-        return (n + (d-1))//d
+        return epochs * (self.batcher.n // bs)
+
+
+def normalize(batch):
+    mean = np.mean(batch, axis=1).reshape(-1,1)
+    std = np.std(batch, axis=1).reshape(-1,1)
+    bn = (batch - mean) / std
+    return bn.reshape(-1, 1, 28, 28)
+
+mnist = input_data.read_data_sets("MNIST_data/", one_hot=False)
+training_set = DataSet(normalize(mnist.train.images), mnist.train.labels.astype("int64"))
+validation_set = DataSet(normalize(mnist.validation.images), mnist.validation.labels.astype("int64"))
+test_set = DataSet(normalize(mnist.test.images), mnist.test.labels.astype("int64"))
+
 
 class Callback():
     def on_train_begin(self):
@@ -105,21 +85,16 @@ class StandardCallback(Callback):
         self.losses = []
         self.rates =  []
 
-    def accuracy_report(self, images, labels, tag, bs):
+    def accuracy_report(self, dataset, tag, bs):
+        images = dataset.data
+        labels = dataset.labels
         acc = accuracy(self.learner.classify(images, bs=bs), labels)
         lss = self.learner.get_loss(images, labels, bs=bs)
         print(f"{tag}: loss = {lss:.3g}, accuracy = {percent(acc)}")
 
     def report(self):
-        self.accuracy_report(self.learner.dataset.validation_images,
-                             self.learner.dataset.validation_labels,
+        self.accuracy_report(self.learner.validation_set,
                              "  validation", bs=50)
-        # self.accuracy_report(self.learner.dataset.test_images,
-        #                     self.learner.dataset.test_labels,
-        #                     "        test", bs=50)
-        # self.accuracy_report(self.learner.dataset.train_images,
-        #                     self.learner.dataset.train_labels,
-        #                     "       train", bs=500)
         
     def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
         self.losses.append(loss)
@@ -136,10 +111,6 @@ class StandardCallback(Callback):
     def on_train_end(self):
         print("training ends")
         self.report()
-        self.accuracy_report(self.learner.dataset.test_images,
-                             self.learner.dataset.test_labels,
-                             "        test", bs=50)
-
 
 class AugmentedStandardCallback(StandardCallback):
     def __init__(self, learner, every=40):
@@ -156,8 +127,8 @@ class AugmentedStandardCallback(StandardCallback):
         super().on_train_step(step, loss, rate, mom, xs, ys, report_every)
         # expensive, use for collecting when needed
         if (step % self.every) == 0:
-            l = self.learner.get_loss(self.learner.dataset.validation_images,
-                                      self.learner.dataset.validation_labels,
+            l = self.learner.get_loss(self.learner.validation_set.data,
+                                      self.learner.validation_set.labels,
                                       bs=500)
             self.vlosses.append(l)
 
@@ -176,9 +147,12 @@ class AugmentedStandardCallback(StandardCallback):
         plotit(self.vlosses[half:], half)
         super().on_train_end()
 
+# Should take a model instead of calling
+# an overridden model() method.
 class Learner():
-    def __init__(self, dataset, name=None, init=False):
-        self.dataset = dataset
+    def __init__(self, train_set, validation_set):
+        self.train_set = train_set
+        self.validation_set = validation_set
         self.stop_requested = False
         self.net = self.model().to("cuda")
         self.loss = nn.CrossEntropyLoss()
@@ -223,18 +197,18 @@ class Learner():
     def request_stop(self):
         self.stop_requested = True
         
-    def train(self, epochs=None, batches=1, bs=1, lr=0.03, p=0.90, report_every=100, callback=None, **kwargs):
+    def train(self, epochs=1, bs=64, lr=0.03, p=0.90, report_every=100, callback=None, **kwargs):
 
         self.stop_requested = False;
         if callback is None:
             callback = StandardCallback(self)
 
-        if epochs is not None:
-            batches = self.dataset.epochs_to_batches(epochs, bs)
-        print("epochs: {}, batches: {}, batch_size: {}".format(epochs, batches, bs))
+        print(f"epochs: {epochs}, batch_size: {bs}, batches: {self.train_set.epochs_to_batches(epochs, bs)}")
 
         callback.on_train_begin()
-        for i in range(batches):
+        i = -1
+        for xs, ys in self.train_set.batches(epochs, bs, shuffle=True):
+            i = i + 1
             if self.stop_requested is True:
                 print(f"train: stop requested at step {i}")
                 break
@@ -248,7 +222,6 @@ class Learner():
                 betas = param_group['betas']
                 param_group['betas'] = (momentum, betas[1])
 
-            xs, ys = self.dataset.next_batch(bs)
             batch = torch.from_numpy(xs).to("cuda")
             labels = torch.from_numpy(ys).to("cuda")
 
@@ -264,14 +237,10 @@ class Learner():
 
         callback.on_train_end()
         return callback
-# end class Learner()
 
 
-# pytorch defaults
-# bn_params = {'eps' : 1e-5, 'momentum' : 0.1}
-
-# tensorflow defaults
-bn_params = {'eps' : 0.001, 'momentum' : 0.99}
+bn_params = {'eps' : 1e-5, 'momentum' : 0.1} # pytorch defaults
+#bn_params = {'eps' : 0.001, 'momentum' : 0.99}# tensorflow defaults
 
 class Residual(nn.Module):
     def __init__(self, d):
@@ -287,10 +256,9 @@ class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.size()[0], -1)
 
-
 class LearnerV2_a(Learner):
-    def __init__(self, dataset, name=None, init=False):
-        super().__init__(dataset, name, init)
+    def __init__(self, train_set, validation_set):
+        super().__init__(train_set, validation_set)
 
     def model(self):
         v = nn.Sequential(
@@ -321,9 +289,6 @@ class LearnerV2_a(Learner):
         )
         return v
 
-    # end of model()
-# end class LearnerV2_a()
-
 def normalise(t):
     b, c, x, y = t.shape
     t = t.view(b, -1)
@@ -347,7 +312,7 @@ def triangular(steps, left, middle):
     return lambda n: f(n) if n<=steps else f(2*steps-n)
 
 def one_cycle(learner, epochs, lrmin, lrmax, bs, callback=None, **kwargs):
-    steps = learner.dataset.epochs_to_batches(epochs, bs)
+    steps = learner.train_set.epochs_to_batches(epochs, bs)
     return learner.train(epochs=2*epochs,
                          bs=bs,
                          lr=triangular(steps, left=lrmin, middle=lrmax),
@@ -384,18 +349,14 @@ def plot_images(batch, title=None):
         plt.axis('off')
         plt.imshow(batch[i,:,:], cmap="Greys")
 
-def error_rate(predictions, actual):
-    errors = np.where(predictions != actual)[0]
-    return len(errors) / len(actual)
-
 def accuracy(predictions, actual):
-    return 1.0 - error_rate(predictions, actual)
+    errors = np.where(predictions != actual)[0]
+    return 1.0 - len(errors) / len(actual)
 
 def lr_find(learner, bs, batches=500, decades=6, start=0.0001, steps=500, **kwargs):
     recorder = LR_Callback(learner)
     lr = exponential_rise(start, decades, steps)
     learner.train(epochs=None, batches=steps, bs=bs, lr=lr, callback=recorder, **kwargs)
-    #learner.restore()
     plt.semilogx(recorder.rates, recorder.losses)
     plt.xlabel("Learning Rate")
     plt.ylabel("Loss")
@@ -418,25 +379,21 @@ def vote(classifiers, n_classes, data):
 def voting_classifier(classifiers, n_classes):
     return lambda data : vote(classifiers, n_classes, data)
 
-def committee(data, classifiers):
+def committee(classifiers, dataset):
     vclass = voting_classifier(classifiers, 10)
-    acc = accuracy(vclass(data.test_images), data.test_labels)
+    acc = accuracy(vclass(dataset.data), dataset.labels)
     print("committee test accuracy:", 100 * acc)
     return acc
 
 def main():
-    data = MNIST_DataSet("MNIST_data/")
-
     learner = LearnerV2_a
-    classifiers = [learner(data) for i in range(10)]
+    classifiers = [learner(training_set, validation_set) for i in range(3)]
 
     params = {'epochs': 4, 'bs': 64, 'lrmin': 2e-05, 'lrmax': 0.0006}
     for classifier in classifiers:
         one_cycle(classifier, **params)
 
-    committee(data, classifiers)
-    
-    print("That's all Folks!")
+    committee(classifiers, test_set)
 
 if __name__ == "__main__":
     main()

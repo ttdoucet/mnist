@@ -37,17 +37,19 @@ class DataSet:
         return epochs * (self.batcher.n // bs)
 
 
-def normalize(batch):
-    mean = np.mean(batch, axis=1).reshape(-1,1)
-    std = np.std(batch, axis=1).reshape(-1,1)
-    bn = (batch - mean) / std
-    return bn.reshape(-1, 1, 28, 28)
-
 mnist = input_data.read_data_sets("MNIST_data/", one_hot=False)
-training_set = DataSet(normalize(mnist.train.images), mnist.train.labels.astype("int64"))
-validation_set = DataSet(normalize(mnist.validation.images), mnist.validation.labels.astype("int64"))
-test_set = DataSet(normalize(mnist.test.images), mnist.test.labels.astype("int64"))
 
+def mnist_batcher(images, labels):
+    def normalize(batch):
+        mean = np.mean(batch, axis=1).reshape(-1,1)
+        std = np.std(batch, axis=1).reshape(-1,1)
+        bn = (batch - mean) / std
+        return bn.reshape(-1, 1, 28, 28)
+    return DataSet(normalize(images), labels.astype("int64"))    
+
+training_set = mnist_batcher(mnist.train.images, mnist.train.labels)
+validation_set = mnist_batcher(mnist.validation.images, mnist.validation.labels)
+test_set = mnist_batcher(mnist.test.images, mnist.test.labels)
 
 class Callback():
     def on_train_begin(self):
@@ -112,7 +114,7 @@ class StandardCallback(Callback):
         print("training ends")
         self.report()
 
-class AugmentedStandardCallback(StandardCallback):
+class AugmentedCallback(StandardCallback):
     def __init__(self, learner, every=40):
         self.learner = learner
         super().__init__(learner)
@@ -147,19 +149,14 @@ class AugmentedStandardCallback(StandardCallback):
         plotit(self.vlosses[half:], half)
         super().on_train_end()
 
-# Should take a model instead of calling
-# an overridden model() method.
 class Learner():
-    def __init__(self, train_set, validation_set):
+    def __init__(self, model, train_set, validation_set):
         self.train_set = train_set
         self.validation_set = validation_set
         self.stop_requested = False
-        self.net = self.model().to("cuda")
+        self.net = model.cuda()
         self.loss = nn.CrossEntropyLoss()
         self.optimizer = optim.Adam(self.net.parameters(), lr=6.25e-4, eps=1e-8, betas=(0.90, 0.99), weight_decay=0)
-
-    def model(self):
-        raise NotImplementedError
 
     # Optional batch size bs chops up the calculation
     # into feasible sizes for large datasets on large models.
@@ -256,38 +253,33 @@ class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.size()[0], -1)
 
-class LearnerV2_a(Learner):
-    def __init__(self, train_set, validation_set):
-        super().__init__(train_set, validation_set)
+def mnist_classifier():
+    return nn.Sequential(
+               nn.Conv2d(in_channels=1, out_channels=128, kernel_size=5, padding=2),
+               nn.ReLU(),
 
-    def model(self):
-        v = nn.Sequential(
-                nn.Conv2d(in_channels=1, out_channels=128, kernel_size=5, padding=2),
-                nn.ReLU(),
+               Residual(128),
+               nn.MaxPool2d(2),
+               Residual(128),
 
-                Residual(128),
-                nn.MaxPool2d(2),
-                Residual(128),
+               nn.BatchNorm2d(128, **bn_params),
+               nn.Conv2d(128, 256, 3, padding=1),
+               nn.ReLU(),
+               nn.MaxPool2d(2),
+               Residual(256),
 
-                nn.BatchNorm2d(128, **bn_params),
-                nn.Conv2d(128, 256, 3, padding=1),
-                nn.ReLU(),
-                nn.MaxPool2d(2),
-                Residual(256),
+               nn.BatchNorm2d(256, **bn_params),
+               nn.Conv2d(256, 512, 3, padding=1),
+               nn.ReLU(),
+               nn.MaxPool2d(2, ceil_mode=True),
+               Residual(512),
 
-                nn.BatchNorm2d(256, **bn_params),
-                nn.Conv2d(256, 512, 3, padding=1),
-                nn.ReLU(),
-                nn.MaxPool2d(2, ceil_mode=True),
-                Residual(512),
-
-                nn.BatchNorm2d(512, **bn_params),
-                nn.AvgPool2d(kernel_size=4),
-                Flatten(),
-                nn.Linear(512,10),
-                # Softmax provided during training.
-        )
-        return v
+               nn.BatchNorm2d(512, **bn_params),
+               nn.AvgPool2d(kernel_size=4),
+               Flatten(),
+               nn.Linear(512,10),
+               # Softmax provided during training.
+           )
 
 def normalise(t):
     b, c, x, y = t.shape
@@ -386,10 +378,9 @@ def committee(classifiers, dataset):
     return acc
 
 def main():
-    learner = LearnerV2_a
-    classifiers = [learner(training_set, validation_set) for i in range(3)]
-
+    classifiers = [Learner(mnist_classifier(), training_set, validation_set) for i in range(3)]
     params = {'epochs': 4, 'bs': 64, 'lrmin': 2e-05, 'lrmax': 0.0006}
+
     for classifier in classifiers:
         one_cycle(classifier, **params)
 

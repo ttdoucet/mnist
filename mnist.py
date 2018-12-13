@@ -5,23 +5,31 @@ import torch.optim as optim
 
 import numpy as np
 import input_data
+import itertools
 
 import matplotlib.pyplot as plt
 import math
+
 
 class Batcher:
     def __init__(self, n):
         self.n = n
 
-    def batches(self, epochs=1, bs=None, shuffle=True):
+    def batches(self, epochs=1, batches = None, bs=1, shuffle=True):
+        erange = itertools.count() if epochs is None else range(epochs)
         if bs is None:
             bs = self.n
         perm = np.arange(self.n)
-        for epoch in range(epochs):
+        nbatches = 0
+        for epoch in erange:
             if shuffle:
                 np.random.shuffle(perm)
             for b in range(self.n // bs):
                 yield perm[b*bs : (b+1)*bs]
+                nbatches += 1
+                if nbatches == batches:
+                    return
+
 
 class DataSet:
     def __init__(self, data, labels):
@@ -29,8 +37,8 @@ class DataSet:
         self.labels = labels
         self.batcher = Batcher(len(labels))
 
-    def batches(self, epochs=1, bs=None, shuffle=True):
-        for perm in self.batcher.batches(epochs, bs, shuffle):
+    def batches(self, epochs=1, batches=None, bs=64, shuffle=True):
+        for perm in self.batcher.batches(epochs, batches, bs, shuffle):
             yield (self.data[perm], self.labels[perm])
 
     def epochs_to_batches(self, epochs, bs):
@@ -52,6 +60,9 @@ validation_set = mnist_batcher(mnist.validation.images, mnist.validation.labels)
 test_set = mnist_batcher(mnist.test.images, mnist.test.labels)
 
 class Callback():
+    def __init__(self, learner):
+        self.learner = learner
+
     def on_train_begin(self):
         pass
     def on_train_step(self, step, loss, rate, mom, xs, ys):
@@ -59,24 +70,6 @@ class Callback():
     def on_train_end(self):
         pass
 
-class LR_Callback(Callback):
-    def __init__(self, learner):
-        self.learner = learner
-        self.losses = []
-        self.rates = []
-        self.best = math.inf
-
-    def on_train_begin(self):
-        self.losses = []
-        self.rates = []
-
-    def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
-        if (loss > 4 * self.best) and (loss > 2) and (step > 50):
-            self.learner.request_stop()
-
-        self.best = min(self.best, loss)
-        self.losses.append(loss)
-        self.rates.append(float(rate))
     
 class StandardCallback(Callback):
     def __init__(self, learner):
@@ -194,17 +187,20 @@ class Learner():
     def request_stop(self):
         self.stop_requested = True
         
-    def train(self, epochs=1, bs=64, lr=0.03, p=0.90, report_every=100, callback=None, **kwargs):
+    def train(self, epochs=1, batches=None, bs=64, lr=0.03, p=0.90, report_every=100, callback=None, **kwargs):
 
         self.stop_requested = False;
         if callback is None:
             callback = StandardCallback(self)
 
-        print(f"epochs: {epochs}, batch_size: {bs}, batches: {self.train_set.epochs_to_batches(epochs, bs)}")
+        if epochs is not None:
+            print(f"epochs: {epochs}, batch_size: {bs}, batches: {self.train_set.epochs_to_batches(epochs, bs)}")
+        else:
+            print(f"batch_size: {bs}, batches: {batches}")
 
         callback.on_train_begin()
         i = -1
-        for xs, ys in self.train_set.batches(epochs, bs, shuffle=True):
+        for xs, ys in self.train_set.batches(epochs, batches=batches, bs=bs, shuffle=True):
             i = i + 1
             if self.stop_requested is True:
                 print(f"train: stop requested at step {i}")
@@ -345,10 +341,25 @@ def accuracy(predictions, actual):
     errors = np.where(predictions != actual)[0]
     return 1.0 - len(errors) / len(actual)
 
-def lr_find(learner, bs, batches=500, decades=6, start=0.0001, steps=500, **kwargs):
+def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs):
+    class LR_Callback(Callback):
+        def __init__(self, learner):
+            super().__init__(learner)
+            self.losses = []
+            self.rates = []
+            self.best = math.inf
+
+        def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
+            if (loss > 4 * self.best) and (loss > 2) and (step > 50):
+                self.learner.request_stop()
+            self.best = min(self.best, loss)
+            self.losses.append(loss)
+            self.rates.append(float(rate))
+
     recorder = LR_Callback(learner)
     lr = exponential_rise(start, decades, steps)
     learner.train(epochs=None, batches=steps, bs=bs, lr=lr, callback=recorder, **kwargs)
+
     plt.semilogx(recorder.rates, recorder.losses)
     plt.xlabel("Learning Rate")
     plt.ylabel("Loss")

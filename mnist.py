@@ -14,20 +14,16 @@ class Batcher:
     def __init__(self, n):
         self.n = n
 
-    def batches(self, epochs=1, batches = None, bs=1, shuffle=True):
-        erange = itertools.count() if epochs is None else range(epochs)
+    def batches(self, epochs=1, bs=None, shuffle=True):
         if bs is None:
             bs = self.n
         perm = np.arange(self.n)
-        nbatches = 0
+        erange = itertools.count() if epochs is None else range(epochs)
         for epoch in erange:
             if shuffle:
                 np.random.shuffle(perm)
             for b in range(self.n // bs):
                 yield perm[b*bs : (b+1)*bs]
-                nbatches += 1
-                if nbatches == batches:
-                    return
 
 class DataSet:
     def __init__(self, data, labels):
@@ -35,12 +31,18 @@ class DataSet:
         self.labels = labels
         self.batcher = Batcher(len(labels))
 
-    def batches(self, epochs=1, batches=None, bs=64, shuffle=True):
-        for perm in self.batcher.batches(epochs, batches, bs, shuffle):
+    def epochs(self, epochs=1, bs=None, shuffle=True):
+        for perm in self.batcher.batches(epochs, bs, shuffle):
             yield (self.data[perm], self.labels[perm])
+
+    def batches(self, batches=1, bs=1, shuffle=True):
+        batcher = self.epochs(epochs=None, bs=bs, shuffle=shuffle)
+        for i in range(batches):
+            yield next(batcher)
 
     def epochs_to_batches(self, epochs, bs):
         return epochs * (self.batcher.n // bs)
+
 
 class Callback():
     def __init__(self, learner):
@@ -178,12 +180,14 @@ class Learner():
 
         if epochs is not None:
             print(f"epochs: {epochs}, batch_size: {bs}, batches: {self.train_set.epochs_to_batches(epochs, bs)}")
+            batcher = self.train_set.epochs(epochs, bs, shuffle=True)
         else:
             print(f"batch_size: {bs}, batches: {batches}")
+            batcher = self.train_set.batches(batches, bs, shuffle=True)
 
         callback.on_train_begin()
 
-        for i, (xs, ys) in enumerate(self.train_set.batches(epochs, batches=batches, bs=bs, shuffle=True)):
+        for i, (xs, ys) in enumerate(batcher):
             if self.stop_requested is True:
                 print(f"train: stop requested at step {i}")
                 break
@@ -395,7 +399,10 @@ def main():
     tset, vset = create_mnist_datasets()
 
     classifiers = [Learner(mnist_classifier(), tset, vset) for i in range(3)]
-    params = {'epochs': 4, 'bs': 64, 'lrmin': 2e-05, 'lrmax': 0.0006}
+#   params = {'epochs': 4, 'bs':  64, 'lrmin': 2e-05, 'lrmax': 6e-4}
+#   params = {'epochs': 4, 'bs': 100, 'lrmin': 2e-05, 'lrmax': 6e-4}
+#   params = {'epochs': 5, 'bs': 100, 'lrmin': 2e-05, 'lrmax': 6e-4}
+    params = {'epochs': 6, 'bs': 100, 'lrmin': 5*2e-05, 'lrmax': 5*6e-4}
 
     for classifier in classifiers:
         one_cycle(classifier, **params)

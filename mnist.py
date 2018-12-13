@@ -10,7 +10,6 @@ import itertools
 import matplotlib.pyplot as plt
 import math
 
-
 class Batcher:
     def __init__(self, n):
         self.n = n
@@ -30,7 +29,6 @@ class Batcher:
                 if nbatches == batches:
                     return
 
-
 class DataSet:
     def __init__(self, data, labels):
         self.data = data
@@ -43,21 +41,6 @@ class DataSet:
 
     def epochs_to_batches(self, epochs, bs):
         return epochs * (self.batcher.n // bs)
-
-
-mnist = input_data.read_data_sets("MNIST_data/", one_hot=False)
-
-def mnist_batcher(images, labels):
-    def normalize(batch):
-        mean = np.mean(batch, axis=1).reshape(-1,1)
-        std = np.std(batch, axis=1).reshape(-1,1)
-        bn = (batch - mean) / std
-        return bn.reshape(-1, 1, 28, 28)
-    return DataSet(normalize(images), labels.astype("int64"))    
-
-training_set = mnist_batcher(mnist.train.images, mnist.train.labels)
-validation_set = mnist_batcher(mnist.validation.images, mnist.validation.labels)
-test_set = mnist_batcher(mnist.test.images, mnist.test.labels)
 
 class Callback():
     def __init__(self, learner):
@@ -199,9 +182,8 @@ class Learner():
             print(f"batch_size: {bs}, batches: {batches}")
 
         callback.on_train_begin()
-        i = -1
-        for xs, ys in self.train_set.batches(epochs, batches=batches, bs=bs, shuffle=True):
-            i = i + 1
+
+        for i, (xs, ys) in enumerate(self.train_set.batches(epochs, batches=batches, bs=bs, shuffle=True)):
             if self.stop_requested is True:
                 print(f"train: stop requested at step {i}")
                 break
@@ -388,14 +370,35 @@ def committee(classifiers, dataset):
     print("committee test accuracy:", 100 * acc)
     return acc
 
+
+def create_mnist_datasets():
+    mnist = input_data.read_data_sets("MNIST_data/", one_hot=False)
+
+    def mnist_batcher(images, labels):
+        def normalize(batch):
+            mean = np.mean(batch, axis=1).reshape(-1,1)
+            std = np.std(batch, axis=1).reshape(-1,1)
+            bn = (batch - mean) / std
+            return bn.reshape(-1, 1, 28, 28)
+        return DataSet(normalize(images), labels.astype("int64"))
+
+    # training_set = mnist_batcher(mnist.train.images, mnist.train.labels)
+    # validation_set = mnist_batcher(mnist.validation.images, mnist.validation.labels)
+    test_set = mnist_batcher(mnist.test.images, mnist.test.labels)
+    full_training_set = mnist_batcher(np.concatenate((mnist.train.images, mnist.validation.images)),
+                                      np.concatenate((mnist.train.labels, mnist.validation.labels)))
+    return (full_training_set, test_set)
+
 def main():
-    classifiers = [Learner(mnist_classifier(), training_set, validation_set) for i in range(3)]
+    tset, vset = create_mnist_datasets()
+
+    classifiers = [Learner(mnist_classifier(), tset, vset) for i in range(5)]
     params = {'epochs': 4, 'bs': 64, 'lrmin': 2e-05, 'lrmax': 0.0006}
 
     for classifier in classifiers:
         one_cycle(classifier, **params)
 
-    committee(classifiers, test_set)
+    committee(classifiers, vset)
 
 if __name__ == "__main__":
     main()

@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from torchvision import datasets, transforms
 
 import numpy as np
-import input_data
 import itertools
 
 import matplotlib.pyplot as plt
@@ -370,29 +370,31 @@ def committee(classifiers, dataset):
     print("committee test accuracy:", 100 * acc)
     return acc
 
-
 def create_mnist_datasets():
-    mnist = input_data.read_data_sets("MNIST_data/", one_hot=False)
+    def normalize(batch):
+        batch = to_float(batch.reshape(-1, 1, 28, 28))
+        mean = np.mean(batch, axis=(1,2,3), keepdims=True)
+        std = np.std(batch, axis=(1,2,3), keepdims=True)
+        bn = (batch - mean) / std
+        return bn
+    def to_float(v):
+        v = v.astype(np.float32)
+        return np.multiply(v, 1.0 / 255.0)
+    def batcher(data, labels):
+        images = np.expand_dims(data.numpy(), axis=1)
+        images = normalize(images)
+        return DataSet(images, labels.numpy())
 
-    def mnist_batcher(images, labels):
-        def normalize(batch):
-            mean = np.mean(batch, axis=1).reshape(-1,1)
-            std = np.std(batch, axis=1).reshape(-1,1)
-            bn = (batch - mean) / std
-            return bn.reshape(-1, 1, 28, 28)
-        return DataSet(normalize(images), labels.astype("int64"))
-
-    # training_set = mnist_batcher(mnist.train.images, mnist.train.labels)
-    # validation_set = mnist_batcher(mnist.validation.images, mnist.validation.labels)
-    test_set = mnist_batcher(mnist.test.images, mnist.test.labels)
-    full_training_set = mnist_batcher(np.concatenate((mnist.train.images, mnist.validation.images)),
-                                      np.concatenate((mnist.train.labels, mnist.validation.labels)))
-    return (full_training_set, test_set)
+    ds = datasets.MNIST('./data', train=True, download=True, transform=transforms.ToTensor())
+    training_set = batcher(ds.train_data, ds.train_labels)
+    ds = datasets.MNIST('./data', train=False, download=True, transform=transforms.ToTensor())
+    test_set = batcher(ds.test_data, ds.test_labels)
+    return (training_set, test_set)
 
 def main():
     tset, vset = create_mnist_datasets()
 
-    classifiers = [Learner(mnist_classifier(), tset, vset) for i in range(5)]
+    classifiers = [Learner(mnist_classifier(), tset, vset) for i in range(3)]
     params = {'epochs': 4, 'bs': 64, 'lrmin': 2e-05, 'lrmax': 0.0006}
 
     for classifier in classifiers:

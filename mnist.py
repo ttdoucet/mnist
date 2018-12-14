@@ -10,25 +10,16 @@ import itertools
 import matplotlib.pyplot as plt
 import math
 
-# maybe Batcher should always just run
-# for one epoch, like the pytorch dataloader
-# design.  It is perfectly convenient to use
-# by_batch() and by_epoch(), and the code
-# would simplify a lot here.
 class Batcher:
     def __init__(self, n):
         self.n = n
 
-    def batches(self, epochs=1, bs=None, shuffle=True):
-        if bs is None:
-            bs = self.n
+    def __call__(self, bs=1, shuffle=True):
         perm = np.arange(self.n)
-        erange = itertools.count() if epochs is None else range(epochs)
-        for epoch in erange:
-            if shuffle:
-                np.random.shuffle(perm)
-            for b in range(self.n // bs):
-                yield perm[b*bs : (b+1)*bs]
+        if shuffle:
+            np.random.shuffle(perm)
+        for b in range(self.n // bs):
+            yield perm[b*bs : (b+1)*bs]
 
 class DataSet:
     def __init__(self, data, labels):
@@ -36,25 +27,25 @@ class DataSet:
         self.labels = labels
         self.batcher = Batcher(len(labels))
 
-    # now maybe get rid of the epochs parameter and
-    # have it always be one?
-    def epochs(self, epochs=1, bs=None, shuffle=True):
-        for perm in self.batcher.batches(epochs, bs, shuffle):
+    def __call__(self, bs=None, shuffle=True):
+        for perm in self.batcher(bs, shuffle):
             yield (self.data[perm], self.labels[perm])
 
     def epochs_to_batches(self, epochs, bs):
         return epochs * (self.batcher.n // bs)
 
-
-def by_epoch(ds, n, bs, shuffle=True):
-    for data, labels in ds.epochs(n, bs, shuffle):
-        yield (data, labels)
-
-def by_batch(ds, n, bs, shuffle=True):
-    while True:
-        for data, labels in by_epoch(ds, 1, bs, shuffle):
+def by_epoch(ds, epochs=1, bs=1, shuffle=True):
+    for epoch in range(epochs):
+        for data, labels in ds(bs, shuffle):
             yield (data, labels)
 
+def by_batch(ds, batches=1, bs=1, shuffle=True):
+    n = 1
+    while True:
+        for n, (data, labels) in enumerate(by_epoch(ds, 1, bs, shuffle), n) :
+            yield (data, labels)
+            if n == batches:
+                return
 
 class Callback():
     def __init__(self, learner):

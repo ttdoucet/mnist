@@ -284,16 +284,21 @@ def linear(steps, left, right):
     m = (right-left)/steps
     return lambda n: m*n + left
 
-def triangular(steps, left, middle):
+def triangular(steps, left, middle, right=None):
+    if right is None: right=left
     f = linear(steps, left, middle)
-    return lambda n: f(n) if n<=steps else f(2*steps-n)
+    g = linear(steps, middle, right)
+    return lambda n: f(n) if n<=steps else g(n-steps)
 
-def one_cycle(learner, epochs, lrmin, lrmax, bs, callback=None, **kwargs):
+def one_cycle(learner, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85, 
+              lrmin2=None, pmax2=None, callback=None, **kwargs):
     steps = learner.train_set.epochs_to_batches(epochs, bs)
+    if lrmin2 is None: lrmin2=lrmin
+    if pmax2 is None: pmax2 = pmax
     return learner.train(epochs=2*epochs,
                          bs=bs,
-                         lr=triangular(steps, left=lrmin, middle=lrmax),
-                         p=triangular(steps, left=0.95, middle=0.85),
+                         lr=triangular(steps, left=lrmin, middle=lrmax, right=lrmin2),
+                         p=triangular(steps, left=pmax, middle=pmin, right=pmax2),
                          callback=callback,
                          report_every=steps//10)
 
@@ -418,17 +423,13 @@ def create_mnist_datasets():
 def main():
     tset, vset = create_mnist_datasets()
 
-    classifiers = [Learner(mnist_classifier(), tset, vset) for i in range(10)]
-#   params = {'epochs': 4, 'bs':  64, 'lrmin': 2e-05, 'lrmax': 6e-4}
-#   params = {'epochs': 4, 'bs': 100, 'lrmin': 2e-05, 'lrmax': 6e-4}
-#   params = {'epochs': 5, 'bs': 100, 'lrmin': 2e-05, 'lrmax': 6e-4}
-#   params = {'epochs': 6, 'bs': 100, 'lrmin': 5*2e-05, 'lrmax': 5*6e-4}
-#   params = {'epochs': 8, 'bs': 100, 'lrmin': 10*2e-05, 'lrmax': 10*6e-4}
-    params = {'epochs': 4, 'bs': 100, 'lrmin': 10*2e-05, 'lrmax': 10*6e-4}
+    classifiers = [Learner(mnist_classifier(), tset, vset) for i in range(5)]
+    params = {'epochs': 4, 'bs': 100,
+              'lrmin': 1e-4, 'lrmax': 1e-3,
+              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
 
     for classifier in classifiers:
         one_cycle(classifier, **params)
-
 
     committee(classifiers, vset)
 

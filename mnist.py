@@ -10,6 +10,11 @@ import itertools
 import matplotlib.pyplot as plt
 import math
 
+# maybe Batcher should always just run
+# for one epoch, like the pytorch dataloader
+# design.  It is perfectly convenient to use
+# by_batch() and by_epoch(), and the code
+# would simplify a lot here.
 class Batcher:
     def __init__(self, n):
         self.n = n
@@ -31,17 +36,24 @@ class DataSet:
         self.labels = labels
         self.batcher = Batcher(len(labels))
 
+    # now maybe get rid of the epochs parameter and
+    # have it always be one?
     def epochs(self, epochs=1, bs=None, shuffle=True):
         for perm in self.batcher.batches(epochs, bs, shuffle):
             yield (self.data[perm], self.labels[perm])
 
-    def batches(self, batches=1, bs=1, shuffle=True):
-        batcher = self.epochs(epochs=None, bs=bs, shuffle=shuffle)
-        for i in range(batches):
-            yield next(batcher)
-
     def epochs_to_batches(self, epochs, bs):
         return epochs * (self.batcher.n // bs)
+
+
+def by_epoch(ds, n, bs, shuffle=True):
+    for data, labels in ds.epochs(n, bs, shuffle):
+        yield (data, labels)
+
+def by_batch(ds, n, bs, shuffle=True):
+    while True:
+        for data, labels in by_epoch(ds, 1, bs, shuffle):
+            yield (data, labels)
 
 
 class Callback():
@@ -180,10 +192,10 @@ class Learner():
 
         if epochs is not None:
             print(f"epochs: {epochs}, batch_size: {bs}, batches: {self.train_set.epochs_to_batches(epochs, bs)}")
-            batcher = self.train_set.epochs(epochs, bs, shuffle=True)
+            batcher = by_epoch(self.train_set, epochs, bs, shuffle=True)
         else:
             print(f"batch_size: {bs}, batches: {batches}")
-            batcher = self.train_set.batches(batches, bs, shuffle=True)
+            batcher = by_batch(self.train_set, batches, bs, shuffle=True)
 
         callback.on_train_begin()
 
@@ -374,6 +386,18 @@ def committee(classifiers, dataset):
     print("committee test accuracy:", 100 * acc)
     return acc
 
+
+def img_normalize(t):
+    def normalise(t):
+        c, x, y = t.shape
+        t = t.view(c, -1)
+        t = t - t.mean(dim=1, keepdim=True)
+        t = t / t.std(dim=1, keepdim=True, unbiased=False)
+        return t.view(c, x, y)
+    return normalise(t)
+
+
+
 def create_mnist_datasets():
     def normalize(batch):
         batch = to_float(batch.reshape(-1, 1, 28, 28))
@@ -389,23 +413,31 @@ def create_mnist_datasets():
         images = normalize(images)
         return DataSet(images, labels.numpy())
 
-    ds = datasets.MNIST('./data', train=True, download=True, transform=transforms.ToTensor())
+    xform = transforms.Compose([
+                          transforms.ToTensor(),
+                          transforms.Lambda(img_normalize)
+                       ])
+
+    ds = datasets.MNIST('./data', train=True, download=True, transform=xform)
     training_set = batcher(ds.train_data, ds.train_labels)
-    ds = datasets.MNIST('./data', train=False, download=True, transform=transforms.ToTensor())
+    ds = datasets.MNIST('./data', train=False, download=True, transform=xform)
     test_set = batcher(ds.test_data, ds.test_labels)
     return (training_set, test_set)
 
 def main():
     tset, vset = create_mnist_datasets()
 
-    classifiers = [Learner(mnist_classifier(), tset, vset) for i in range(3)]
+    classifiers = [Learner(mnist_classifier(), tset, vset) for i in range(10)]
 #   params = {'epochs': 4, 'bs':  64, 'lrmin': 2e-05, 'lrmax': 6e-4}
 #   params = {'epochs': 4, 'bs': 100, 'lrmin': 2e-05, 'lrmax': 6e-4}
 #   params = {'epochs': 5, 'bs': 100, 'lrmin': 2e-05, 'lrmax': 6e-4}
-    params = {'epochs': 6, 'bs': 100, 'lrmin': 5*2e-05, 'lrmax': 5*6e-4}
+#   params = {'epochs': 6, 'bs': 100, 'lrmin': 5*2e-05, 'lrmax': 5*6e-4}
+#   params = {'epochs': 8, 'bs': 100, 'lrmin': 10*2e-05, 'lrmax': 10*6e-4}
+    params = {'epochs': 4, 'bs': 100, 'lrmin': 10*2e-05, 'lrmax': 10*6e-4}
 
     for classifier in classifiers:
         one_cycle(classifier, **params)
+
 
     committee(classifiers, vset)
 

@@ -10,33 +10,13 @@ import itertools
 import matplotlib.pyplot as plt
 import math
 
-class Batcher:
-    def __init__(self, n):
-        self.n = n
-
-    def __call__(self, bs=1, shuffle=True):
-        perm = np.arange(self.n)
-        if shuffle:
-            np.random.shuffle(perm)
-        for b in range(self.n // bs):
-            yield perm[b*bs : (b+1)*bs]
-
-class DataSet:
-    def __init__(self, data, labels):
-        self.data = data
-        self.labels = labels
-        self.batcher = Batcher(len(labels))
-
-    def __call__(self, bs=None, shuffle=True):
-        for perm in self.batcher(bs, shuffle):
-            yield (self.data[perm], self.labels[perm])
-
-    def epochs_to_batches(self, epochs, bs):
-        return epochs * (self.batcher.n // bs)
+def epochs_to_batches(ds, epochs, bs):
+    return epochs * (len(ds) // bs)
 
 def by_epoch(ds, epochs=1, bs=1, shuffle=True):
     for epoch in range(epochs):
-        for data, labels in ds(bs, shuffle):
+        batcher = torch.utils.data.DataLoader(ds, batch_size=bs, shuffle=shuffle, drop_last=True)
+        for data, labels in batcher:
             yield (data, labels)
 
 def by_batch(ds, batches=1, bs=1, shuffle=True):
@@ -57,7 +37,6 @@ class Callback():
         pass
     def on_train_end(self):
         pass
-
     
 class StandardCallback(Callback):
     def __init__(self, learner):
@@ -69,10 +48,7 @@ class StandardCallback(Callback):
         self.rates =  []
 
     def accuracy_report(self, dataset, tag, bs):
-        images = dataset.data
-        labels = dataset.labels
-        acc = accuracy(self.learner.classify(images, bs=bs), labels)
-        lss = self.learner.get_loss(images, labels, bs=bs)
+        acc, lss = accuracy_t(self.learner.net, self.learner.loss, dataset)
         print(f"{tag}: loss = {lss:.3g}, accuracy = {percent(acc)}")
 
     def report(self):
@@ -85,7 +61,7 @@ class StandardCallback(Callback):
         step += 1
 
         if (step == 1) or (step % report_every == 0):
-            acc = accuracy(self.learner.classify(xs), ys)
+            acc = accuracy(self.learner.classify(xs.numpy()), ys.numpy())
             print(f"batch {step}: loss = {loss:.3g}, lr = {rate:.3g}, p = {mom:.3g}, accuracy = {percent(acc)}")
 
         if (step % (10 * report_every) == 0):
@@ -110,10 +86,9 @@ class AugmentedCallback(StandardCallback):
         super().on_train_step(step, loss, rate, mom, xs, ys, report_every)
         # expensive, use for collecting when needed
         if (step % self.every) == 0:
-            l = self.learner.get_loss(self.learner.validation_set.data,
-                                      self.learner.validation_set.labels,
-                                      bs=500)
+            acc, l = accuracy_t(self.learner.net, self.learner.loss, self.learner.validation_set)
             self.vlosses.append(l)
+            self.acc.append(acc)
 
     def on_train_end(self):
         def plotit(losses, xoffset):
@@ -165,13 +140,6 @@ class Learner():
         else:
             return y
 
-    def get_loss(self, x, labels, bs=None):
-        y = self.classify(x, bs=bs, mode="raw")
-        yt = torch.tensor(y).to("cuda")
-        labelst = torch.from_numpy(labels).to("cuda")
-        ce_loss = self.loss(yt, labelst)
-        return ce_loss.data.item()
-
     def request_stop(self):
         self.stop_requested = True
         
@@ -182,7 +150,7 @@ class Learner():
             callback = StandardCallback(self)
 
         if epochs is not None:
-            print(f"epochs: {epochs}, batch_size: {bs}, batches: {self.train_set.epochs_to_batches(epochs, bs)}")
+            print(f"epochs: {epochs}, batch_size: {bs}, batches: {epochs_to_batches(self.train_set, epochs, bs)}")
             batcher = by_epoch(self.train_set, epochs, bs, shuffle=True)
         else:
             print(f"batch_size: {bs}, batches: {batches}")
@@ -204,8 +172,8 @@ class Learner():
                 betas = param_group['betas']
                 param_group['betas'] = (momentum, betas[1])
 
-            batch = torch.from_numpy(xs).to("cuda")
-            labels = torch.from_numpy(ys).to("cuda")
+            batch = xs.to("cuda")
+            labels = ys.to("cuda")
 
             self.net.train()
 
@@ -220,6 +188,40 @@ class Learner():
         callback.on_train_end()
         return callback
 
+
+class Evaluator():
+    def __init__(self, model, device="cuda"):
+        self.device = device
+        self.model = model.to(device)
+
+    def eval(self, x):
+        return self.model(x.to(self.device))
+
+    def __call__(self, x):
+        return self.softmax(x).max(1, keepdim=False)[1]
+
+    def logits(self, x):
+        return self.eval(x)
+
+    def softmax(self, x):
+        return F.softmax(self.eval(x), 1)
+
+def accuracy_t(model, lossftn, ds, bs=100):
+    nn = Evaluator(model)
+    batcher = by_epoch(ds, epochs=1, bs=bs)
+    correct = 0
+    tloss = 0
+    for n, (batch, labels) in enumerate(batcher, 1):
+        batch = batch.cuda()
+        labels = labels.cuda()
+        pred = nn(batch)
+        correct += pred.eq(labels.view_as(pred)).sum().item()
+        logits = nn.logits(batch)
+        tloss += lossftn(logits, labels).item()
+
+    accuracy = correct / (n * bs)
+    loss = tloss / n
+    return accuracy, loss
 
 bn_params = {'eps' : 1e-5, 'momentum' : 0.1} # pytorch defaults
 #bn_params = {'eps' : 0.001, 'momentum' : 0.99}# tensorflow defaults
@@ -266,13 +268,6 @@ def mnist_classifier():
                # Softmax provided during training.
            )
 
-def normalise(t):
-    b, c, x, y = t.shape
-    t = t.view(b, -1)
-    t = t - t.mean(dim=1, keepdim=True)
-    t = t / t.std(dim=1, keepdim=True, unbiased=False)
-    return t.view(b, c, x, y)
-
 def exponential_decay(v, half_life):
     return lambda n: v * np.power(1/2, n/half_life)
 
@@ -292,7 +287,7 @@ def triangular(steps, left, middle, right=None):
 
 def one_cycle(learner, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85, 
               lrmin2=None, pmax2=None, callback=None, **kwargs):
-    steps = learner.train_set.epochs_to_batches(epochs, bs)
+    steps = epochs_to_batches(learner.train_set, epochs, bs)
     if lrmin2 is None: lrmin2=lrmin
     if pmax2 is None: pmax2 = pmax
     return learner.train(epochs=2*epochs,
@@ -306,16 +301,17 @@ def percent(n):
     return "%.2f%%" % (100 * n)
 
 def show_image(v, title=None):
-    v = v.numpy()
-    vv = v.reshape([28,28])
+    if type(v) is torch.Tensor:
+        v = v.numpy()
+    v = v.reshape([28,28])
     plt.figure()
     plt.title(title)
     plt.xticks([])
     plt.yticks([])
-    img = plt.imshow(vv, cmap="Greys", )
+    img = plt.imshow(v, cmap="Greys", )
 
 def plot_images(batch, title=None):
-    if type(batch) != np.ndarray:
+    if type(batch) is torch.Tensor:
         batch = batch.cpu().detach().numpy()
     n = batch.shape[-1]
     batch = batch.reshape(-1, n, n)
@@ -379,51 +375,30 @@ def voting_classifier(classifiers, n_classes):
 def committee(classifiers, dataset):
     vclass = voting_classifier(classifiers, 10)
     acc = accuracy(vclass(dataset.data), dataset.labels)
-    print("committee test accuracy:", 100 * acc)
+    print(f"committee of {len(classifiers)} accuracy: {100 * acc}")
     return acc
 
-
-def img_normalize(t):
-    def normalise(t):
+def create_mnist_datasets():
+    def img_normalize(t):
         c, x, y = t.shape
         t = t.view(c, -1)
         t = t - t.mean(dim=1, keepdim=True)
         t = t / t.std(dim=1, keepdim=True, unbiased=False)
         return t.view(c, x, y)
-    return normalise(t)
-
-
-
-def create_mnist_datasets():
-    def normalize(batch):
-        batch = to_float(batch.reshape(-1, 1, 28, 28))
-        mean = np.mean(batch, axis=(1,2,3), keepdims=True)
-        std = np.std(batch, axis=(1,2,3), keepdims=True)
-        bn = (batch - mean) / std
-        return bn
-    def to_float(v):
-        v = v.astype(np.float32)
-        return np.multiply(v, 1.0 / 255.0)
-    def batcher(data, labels):
-        images = np.expand_dims(data.numpy(), axis=1)
-        images = normalize(images)
-        return DataSet(images, labels.numpy())
 
     xform = transforms.Compose([
                           transforms.ToTensor(),
                           transforms.Lambda(img_normalize)
                        ])
 
-    ds = datasets.MNIST('./data', train=True, download=True, transform=xform)
-    training_set = batcher(ds.train_data, ds.train_labels)
-    ds = datasets.MNIST('./data', train=False, download=True, transform=xform)
-    test_set = batcher(ds.test_data, ds.test_labels)
+    training_set = datasets.MNIST('./data', train=True, download=True, transform=xform)
+    test_set = datasets.MNIST('./data', train=False, download=True, transform=xform)
     return (training_set, test_set)
 
 def main():
     tset, vset = create_mnist_datasets()
 
-    classifiers = [Learner(mnist_classifier(), tset, vset) for i in range(5)]
+    classifiers = [Learner(mnist_classifier(), tset, vset) for i in range(35)]
     params = {'epochs': 4, 'bs': 100,
               'lrmin': 1e-4, 'lrmax': 1e-3,
               'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}

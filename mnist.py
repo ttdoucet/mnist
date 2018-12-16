@@ -178,6 +178,27 @@ class Classifier():
     def softmax(self, x):
         return F.softmax(self.eval(x), 1)
 
+
+def one_hot(d, cols=10):
+    b = np.zeros([d.shape[0], cols])
+    b[np.arange(b.shape[0]), d] = 1
+    return b
+
+
+class VotingClassifier():
+    def __init__(self, classifiers):
+        self.classifiers = classifiers
+
+    def classify(self, x):
+        r = np.zeros([x.shape[0], 10])
+        for cl in self.classifiers:
+            r += one_hot( cl(x).cpu().numpy() )
+        v = np.argmax(r, axis=1)
+        return torch.from_numpy(v)
+
+    def __call__(self, x):
+        return self.classify(x)
+
 def accuracy_t(classifier, lossftn, ds, bs=100):
     batcher = by_epoch(ds, epochs=1, bs=bs)
     correct = 0
@@ -185,10 +206,10 @@ def accuracy_t(classifier, lossftn, ds, bs=100):
     for n, (batch, labels) in enumerate(batcher, 1):
         batch = batch.to("cuda")
         labels = labels.to("cuda")
-        pred = classifier(batch)
+        pred = classifier(batch).to("cuda")
         correct += pred.eq(labels.view_as(pred)).sum().item()
-        logits = classifier.logits(batch)
         if lossftn is not None:
+            logits = classifier.logits(batch)
             tloss += lossftn(logits, labels).item()
     accuracy = correct / (n * bs)
     loss = tloss / n
@@ -329,10 +350,6 @@ def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs
     plt.show()
     return recorder
 
-def one_hot(d, cols=10):
-    b = np.zeros([d.shape[0], cols])
-    b[np.arange(b.shape[0]), d] = 1
-    return b
 
 def create_mnist_datasets():
     def img_normalize(t):
@@ -354,7 +371,7 @@ def create_mnist_datasets():
 def main():
     tset, vset = create_mnist_datasets()
 
-    trainers = [Trainer(mnist_classifier(), tset, vset) for i in range(2)]
+    trainers = [Trainer(mnist_classifier(), tset, vset) for i in range(5)]
     params = {'epochs': 4, 'bs': 100,
               'lrmin': 1e-4, 'lrmax': 1e-3,
               'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
@@ -362,7 +379,13 @@ def main():
     for trainer in trainers:
         one_cycle(trainer, **params)
 
-    #committee(classifiers, vset)
+    classifiers = [Classifier(trainer.net) for trainer in trainers]
+    voter = VotingClassifier(classifiers)
+
+    acc = accuracy_t(voter, lossftn=None, ds=vset)
+    n = len(voter.classifiers)
+    print(f"Committee of {n} accuracy: {percent(acc)}")
+
 
 if __name__ == "__main__":
     main()

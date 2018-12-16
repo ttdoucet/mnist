@@ -54,6 +54,11 @@ class ClassifierCallback(Callback):
                              "  validation", bs=50)
         
     def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
+
+        def accuracy(predictions, actual):
+            errors = np.where(predictions != actual)[0]
+            return 1.0 - len(errors) / len(actual)
+
         self.losses.append(loss)
         self.rates.append(rate)
         step += 1
@@ -182,16 +187,15 @@ class Classifier():
 class VotingClassifier():
     def __init__(self, classifiers, classes=10):
         self.classifiers = classifiers
+        self.classes = classes
 
-    def classify(self, x):
-        r = torch.zeros([x.shape[0], classes])
-        one_hot = torch.eye(classes)
+    def __call__(self, x):
+        r = torch.zeros([x.shape[0], self.classes])
+        one_hot = torch.eye(self.classes)
         for cl in self.classifiers:
             r += one_hot[ cl(x) ]
         return r.max(1)[1]
 
-    def __call__(self, x):
-        return self.classify(x)
 
 def accuracy_t(classifier, lossftn, ds, bs=100):
     batcher = by_epoch(ds, epochs=1, bs=bs)
@@ -314,9 +318,6 @@ def plot_images(batch, title=None):
         plt.axis('off')
         plt.imshow(batch[i,:,:], cmap="Greys")
 
-def accuracy(predictions, actual):
-    errors = np.where(predictions != actual)[0]
-    return 1.0 - len(errors) / len(actual)
 
 def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs):
     class LR_Callback(Callback):
@@ -374,7 +375,7 @@ def main():
         one_cycle(trainer, **params)
 
     classifiers = [Classifier(trainer.net) for trainer in trainers]
-    voter = VotingClassifier(classifiers)
+    voter = VotingClassifier(classifiers, classes=10)
 
     acc = accuracy_t(voter, lossftn=None, ds=vset)
     n = len(voter.classifiers)

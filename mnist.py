@@ -179,22 +179,16 @@ class Classifier():
         return F.softmax(self.eval(x), 1)
 
 
-def one_hot(d, cols=10):
-    b = np.zeros([d.shape[0], cols])
-    b[np.arange(b.shape[0]), d] = 1
-    return b
-
-
 class VotingClassifier():
-    def __init__(self, classifiers):
+    def __init__(self, classifiers, classes=10):
         self.classifiers = classifiers
 
     def classify(self, x):
-        r = np.zeros([x.shape[0], 10])
+        r = torch.zeros([x.shape[0], classes])
+        one_hot = torch.eye(classes)
         for cl in self.classifiers:
-            r += one_hot( cl(x).cpu().numpy() )
-        v = np.argmax(r, axis=1)
-        return torch.from_numpy(v)
+            r += one_hot[ cl(x) ]
+        return r.max(1)[1]
 
     def __call__(self, x):
         return self.classify(x)
@@ -371,7 +365,7 @@ def create_mnist_datasets():
 def main():
     tset, vset = create_mnist_datasets()
 
-    trainers = [Trainer(mnist_classifier(), tset, vset) for i in range(5)]
+    trainers = [Trainer(mnist_classifier(), tset, vset) for i in range(3)]
     params = {'epochs': 4, 'bs': 100,
               'lrmin': 1e-4, 'lrmax': 1e-3,
               'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}

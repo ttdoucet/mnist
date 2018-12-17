@@ -7,6 +7,7 @@ import numpy as np
 import itertools
 import matplotlib.pyplot as plt
 import math
+import os
 
 def epochs_to_batches(ds, epochs, bs):
     return epochs * (len(ds) // bs)
@@ -172,13 +173,13 @@ class Classifier():
 
     def eval(self, x):
         self.model.eval()
-        return self.model(x.to(self.device))
+        return self.model(x.detach().to(self.device))
 
     def __call__(self, x):
         return self.softmax(x).max(1, keepdim=False)[1]
 
     def logits(self, x):
-        return self.eval(x)
+        return self.eval(x.detach())
 
     def softmax(self, x):
         return F.softmax(self.eval(x), 1)
@@ -194,6 +195,19 @@ class VotingClassifier():
         one_hot = torch.eye(self.classes)
         for cl in self.classifiers:
             r += one_hot[ cl(x) ]
+        return r.max(1)[1]
+
+class VotingSoftmaxClassifier():
+    def __init__(self, classifiers, classes=10):
+        self.classifiers = classifiers
+        self.classes = classes
+
+    def __call__(self, x):
+        r = torch.zeros([x.shape[0], self.classes])
+        for cl in self.classifiers:
+            r += cl.softmax(x).cpu()
+
+        r /= self.classes
         return r.max(1)[1]
 
 
@@ -363,25 +377,55 @@ def create_mnist_datasets():
     test_set = datasets.MNIST('./data', train=False, download=True, transform=xform)
     return (training_set, test_set)
 
+def save_model(model, filename):
+    sd = model.state_dict()
+    #for param_tensor in sd:
+    #    print(param_tensor, "\t", sd[param_tensor].size())
+    torch.save(sd, filename)
+
+def read_model(model, filename):
+    model.load_state_dict(torch.load(filename))
+    model.eval()
+    return model
+
+def ReadClassifier(filename):
+    model = read_model(mnist_classifier(), filename)
+    return Classifier(model)
+
 def main():
     tset, vset = create_mnist_datasets()
 
-    trainers = [Trainer(mnist_classifier(), tset, vset) for i in range(3)]
+
+    trainers = [Trainer(mnist_classifier(), tset, vset) for i in range(11)]
     params = {'epochs': 4, 'bs': 100,
               'lrmin': 1e-4, 'lrmax': 1e-3,
               'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
 
-    for trainer in trainers:
-        one_cycle(trainer, **params)
+    for n, trainer in enumerate(trainers):
+        filename = f"model{n+1}.pt"
+        if os.path.isfile(filename):
+            read_model(trainer.net, filename)
+        else:
+            print(f"Training model {filename}")
+            one_cycle(trainer, **params)
+            save_model(trainer.net, filename)
 
     classifiers = [Classifier(trainer.net) for trainer in trainers]
-    voter = VotingClassifier(classifiers, classes=10)
 
+
+    voter = VotingClassifier(classifiers, classes=10)
     acc = accuracy_t(voter, lossftn=None, ds=vset)
     n = len(voter.classifiers)
     print(f"Committee of {n} accuracy: {percent(acc)}")
+
+    #models = [t.net for t in trainers]
+    voter_s = VotingSoftmaxClassifier(classifiers, 10)
+    acc = accuracy_t(voter_s, lossftn=None, ds=vset)
+    n = len(voter_s.classifiers)    
+    print(f"Softmax committee of {n} accuracy: {percent(acc)}")
 
 
 if __name__ == "__main__":
     main()
     
+# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

@@ -8,6 +8,7 @@ import itertools
 import matplotlib.pyplot as plt
 import math
 import os
+import Augmentor
 
 def epochs_to_batches(ds, epochs, bs):
     return epochs * (len(ds) // bs)
@@ -368,13 +369,27 @@ def create_mnist_datasets():
         t = t / t.std(dim=1, keepdim=True, unbiased=False)
         return t.view(c, x, y)
 
-    xform = transforms.Compose([
+# Experimental
+    p = Augmentor.Pipeline()
+    p.random_distortion(1.0, 4, 4, magnitude=1) # mag 2 might be okay
+#    p.random_distortion(1.0, 4, 4, magnitude=1) # repeat might be okay
+    p.rotate(probability=1.0, max_left_rotation=10, max_right_rotation=10)  # probably good
+
+#    p.zoom(probability=0.5, min_factor=1.1, max_factor=1.5)
+
+    augmented = transforms.Compose([
+                          p.torch_transform(),
                           transforms.ToTensor(),
                           transforms.Lambda(img_normalize)
                        ])
 
-    training_set = datasets.MNIST('./data', train=True, download=True, transform=xform)
-    test_set = datasets.MNIST('./data', train=False, download=True, transform=xform)
+    nonaugmented  = transforms.Compose([
+                          transforms.ToTensor(),
+                          transforms.Lambda(img_normalize)
+                       ])
+
+    training_set = datasets.MNIST('./data', train=True,  download=True, transform=augmented)
+    test_set =     datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
     return (training_set, test_set)
 
 def save_model(model, filename):
@@ -392,11 +407,11 @@ def ReadClassifier(filename):
     model = read_model(mnist_classifier(), filename)
     return Classifier(model)
 
-def main():
+def experiment():
     tset, vset = create_mnist_datasets()
 
 
-    npop = 100
+    npop = 50
 
     trainers = [Trainer(mnist_classifier(), tset, vset) for i in range(npop)]
     params = {'epochs': 4, 'bs': 100,
@@ -408,8 +423,9 @@ def main():
         if os.path.isfile(filename):
             read_model(trainer.net, filename)
         else:
-            print(f"Training model {filename}")
-            one_cycle(trainer, **params)
+            print(f"TRAINING MODEL: {filename}")
+            for i in range(1):
+                one_cycle(trainer, **params)
             save_model(trainer.net, filename)
 
     classifiers = [Classifier(trainer.net) for trainer in trainers]
@@ -419,31 +435,26 @@ def main():
     accs = []
     for i in range(20):
         np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:7]]
+        subset = [classifiers[k] for k in perm[:35]]
 
         voter_s = VotingSoftmaxClassifier(subset, 10)
-        acc = accuracy_t(voter_s, lossftn=None, ds=vset, bs=100)
+        acc = accuracy_t(voter_s, lossftn=None, ds=vset, bs=50)
         n = len(voter_s.classifiers)
         print(f"Softmax committee of {n} accuracy: {percent(acc)}")
         accs.append(acc)
 
-    print("mean:", percent(np.mean(accs)))
+    print("mean:", percent(np.mean(accs)), np.mean(accs) )
 
     return
 
-    voter = VotingClassifier(classifiers, classes=10)
-    acc = accuracy_t(voter, lossftn=None, ds=vset)
-    n = len(voter.classifiers)
-    print(f"Committee of {n} accuracy: {percent(acc)}")
+def main():
+    tset, vset = create_mnist_datasets()
+    trainer = Trainer(mnist_classifier(), tset, vset)
 
-    #models = [t.net for t in trainers]
-    voter_s = VotingSoftmaxClassifier(classifiers, 10)
-    acc = accuracy_t(voter_s, lossftn=None, ds=vset, bs=25)
-    n = len(voter_s.classifiers)    
-    print(f"Softmax committee of {n} accuracy: {percent(acc)}")
-
+    params = {'epochs': 4, 'bs': 100,
+              'lrmin': 1e-4, 'lrmax': 1e-3,
+              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
+    one_cycle(trainer, **params)
 
 if __name__ == "__main__":
-    main()
-    
-# device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    experiment()

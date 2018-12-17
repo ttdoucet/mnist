@@ -396,7 +396,9 @@ def main():
     tset, vset = create_mnist_datasets()
 
 
-    trainers = [Trainer(mnist_classifier(), tset, vset) for i in range(11)]
+    npop = 100
+
+    trainers = [Trainer(mnist_classifier(), tset, vset) for i in range(npop)]
     params = {'epochs': 4, 'bs': 100,
               'lrmin': 1e-4, 'lrmax': 1e-3,
               'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
@@ -413,6 +415,22 @@ def main():
     classifiers = [Classifier(trainer.net) for trainer in trainers]
 
 
+    perm = np.arange(npop)
+    accs = []
+    for i in range(20):
+        np.random.shuffle(perm)
+        subset = [classifiers[k] for k in perm[:7]]
+
+        voter_s = VotingSoftmaxClassifier(subset, 10)
+        acc = accuracy_t(voter_s, lossftn=None, ds=vset, bs=100)
+        n = len(voter_s.classifiers)
+        print(f"Softmax committee of {n} accuracy: {percent(acc)}")
+        accs.append(acc)
+
+    print("mean:", percent(np.mean(accs)))
+
+    return
+
     voter = VotingClassifier(classifiers, classes=10)
     acc = accuracy_t(voter, lossftn=None, ds=vset)
     n = len(voter.classifiers)
@@ -420,7 +438,7 @@ def main():
 
     #models = [t.net for t in trainers]
     voter_s = VotingSoftmaxClassifier(classifiers, 10)
-    acc = accuracy_t(voter_s, lossftn=None, ds=vset)
+    acc = accuracy_t(voter_s, lossftn=None, ds=vset, bs=25)
     n = len(voter_s.classifiers)    
     print(f"Softmax committee of {n} accuracy: {percent(acc)}")
 

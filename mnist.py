@@ -19,7 +19,7 @@ def by_epoch(ds, epochs=1, bs=1, shuffle=True):
         for data, labels in batcher:
             yield (data, labels)
 
-def by_batch(ds, batches=1, bs=1, shuffle=True):
+def by_batch(ds, batches=None, bs=1, shuffle=True):
     n = 1
     while True:
         for n, (data, labels) in enumerate(by_epoch(ds, 1, bs, shuffle), n) :
@@ -48,12 +48,16 @@ class ClassifierCallback(Callback):
         self.rates =  []
 
     def accuracy_report(self, dataset, tag, bs):
-        acc, lss = accuracy_t(Classifier(self.learner.net), self.learner.loss, dataset)
+        acc, lss = accuracy_t(Classifier(self.learner.net), dataset, lossftn=self.learner.loss)
         print(f"{tag}: loss = {lss:.3g}, accuracy = {percent(acc)}")
 
     def report(self):
-        self.accuracy_report(self.learner.validation_set,
-                             "  validation", bs=50)
+        if self.learner.validation_set is not None:
+            self.accuracy_report(self.learner.validation_set,
+                                 "  validation", bs=50)
+#       self.accuracy_report(self.learner.train_set,
+#                            "       train", bs=50)
+
         
     def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
 
@@ -74,13 +78,26 @@ class ClassifierCallback(Callback):
 
     def on_train_end(self):
         print("training ends")
-        self.report()
+        #self.report()
+
+class filter():
+    def __init__(self, tc=0.9):
+        self.a = None
+        self.tc = tc
+        pass
+    def __call__(self, v):
+        if self.a is None:
+            self.a = v
+        else:
+            self.a = self.tc * self.a + (1-self.tc) * v
+        return self.a
 
 class AugmentedCallback(ClassifierCallback):
-    def __init__(self, learner, every=40):
+    def __init__(self, learner):
         self.learner = learner
         super().__init__(learner)
-        self.every = every
+        self.vbatcher = by_batch(self.learner.validation_set, bs=100)
+        self.classifier = Classifier(self.learner.net)
 
     def on_train_begin(self):
         super().on_train_begin()
@@ -89,25 +106,28 @@ class AugmentedCallback(ClassifierCallback):
 
     def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
         super().on_train_step(step, loss, rate, mom, xs, ys, report_every)
-        # expensive, use for collecting when needed
-        if (step % self.every) == 0:
-            acc, l = accuracy_t(Classifier(self.learner.net), self.learner.loss, self.learner.validation_set)
-            self.vlosses.append(l)
-            self.acc.append(acc)
+
+        # We sample the validation loss
+        images, labels = next(iter(self.vbatcher))
+        logits = self.classifier.logits(images.to("cuda"))
+        ce_loss = self.learner.loss(logits, labels.to("cuda")).data.item()
+        self.vlosses.append(ce_loss)
 
     def on_train_end(self):
         def plotit(losses, xoffset):
             fig = plt.figure()
             ax = fig.add_subplot(111)
-            ax.plot(self.every * (xoffset + np.arange(len(losses))), losses)
+            ax.plot(xoffset + np.arange(len(losses)), losses)
             ax.grid(True)
             ax.set_ylabel("validation loss")
             ax.set_xlabel("step")
             plt.show()
 
-        half = len(self.vlosses) // 2
-        plotit(self.vlosses[:half], 0)
-        plotit(self.vlosses[half:], half)
+        f = filter(0.99)
+        filtered = [f(vloss) for vloss in self.vlosses]
+        half = len(filtered) // 2
+        plotit(filtered[:half], 0)
+        plotit(filtered[half:], half)
         super().on_train_end()
 
 class Trainer():
@@ -129,10 +149,10 @@ class Trainer():
             callback = ClassifierCallback(self)
 
         if epochs is not None:
-            print(f"epochs: {epochs}, batch_size: {bs}, batches: {epochs_to_batches(self.train_set, epochs, bs)}")
+            print(f"epochs: {epochs}, batch size: {bs}, batches: {epochs_to_batches(self.train_set, epochs, bs)}")
             batcher = by_epoch(self.train_set, epochs, bs, shuffle=True)
         else:
-            print(f"batch_size: {bs}, batches: {batches}")
+            print(f"batch size: {bs}, batches: {batches}")
             batcher = by_batch(self.train_set, batches, bs, shuffle=True)
 
         callback.on_train_begin()
@@ -162,7 +182,8 @@ class Trainer():
             ce_loss.backward()
             self.optimizer.step()
 
-            callback.on_train_step(i, ce_loss.data.item(), learning_rate, momentum, xs, ys, report_every)
+            with torch.no_grad():
+                callback.on_train_step(i, ce_loss.data.item(), learning_rate, momentum, xs, ys, report_every)
 
         callback.on_train_end()
         return callback
@@ -184,7 +205,6 @@ class Classifier():
 
     def softmax(self, x):
         return F.softmax(self.eval(x), 1)
-
 
 class VotingClassifier():
     def __init__(self, classifiers, classes=10):
@@ -211,8 +231,7 @@ class VotingSoftmaxClassifier():
         r /= self.classes
         return r.max(1)[1]
 
-
-def accuracy_t(classifier, lossftn, ds, bs=100):
+def accuracy_t(classifier, ds, bs=100, lossftn=None):
     batcher = by_epoch(ds, epochs=1, bs=bs)
     correct = 0
     tloss = 0
@@ -246,7 +265,7 @@ class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.size()[0], -1)
 
-def mnist_classifier():
+def mnist_model():
     return nn.Sequential(
                nn.Conv2d(in_channels=1, out_channels=128, kernel_size=5, padding=2),
                nn.ReLU(),
@@ -330,7 +349,9 @@ def plot_images(batch, title=None):
     fig.canvas.set_window_title(title)
     for i in range(n):
         plt.subplot(s, s, i+1)
-        plt.axis('off')
+        plt.xticks([])
+        plt.yticks([])
+#       plt.axis('off')
         plt.imshow(batch[i,:,:], cmap="Greys")
 
 
@@ -361,7 +382,7 @@ def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs
     return recorder
 
 
-def create_mnist_datasets():
+def create_mnist_datasets(heldout=0, randomize=False):
     def img_normalize(t):
         c, x, y = t.shape
         t = t.view(c, -1)
@@ -369,13 +390,9 @@ def create_mnist_datasets():
         t = t / t.std(dim=1, keepdim=True, unbiased=False)
         return t.view(c, x, y)
 
-# Experimental
     p = Augmentor.Pipeline()
-    p.random_distortion(1.0, 4, 4, magnitude=1) # mag 2 might be okay
-#    p.random_distortion(1.0, 4, 4, magnitude=1) # repeat might be okay
+    p.random_distortion(1.0, 4, 4, magnitude=1)
     p.rotate(probability=1.0, max_left_rotation=10, max_right_rotation=10)  # probably good
-
-#    p.zoom(probability=0.5, min_factor=1.1, max_factor=1.5)
 
     augmented = transforms.Compose([
                           p.torch_transform(),
@@ -383,14 +400,28 @@ def create_mnist_datasets():
                           transforms.Lambda(img_normalize)
                        ])
 
+
     nonaugmented  = transforms.Compose([
                           transforms.ToTensor(),
                           transforms.Lambda(img_normalize)
                        ])
 
-    training_set = datasets.MNIST('./data', train=True,  download=True, transform=augmented)
-    test_set =     datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
-    return (training_set, test_set)
+    train_au = datasets.MNIST('./data', train=True,  download=True, transform=augmented)
+    train_na = datasets.MNIST('./data', train=True,  download=True, transform=nonaugmented)
+    test_set = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
+
+    indices = torch.arange(len(train_na))
+    if randomize:
+        np.random.shuffle(indices)
+
+    if heldout > 0:
+        train_set = torch.utils.data.Subset(train_au, indices[:-heldout])
+        valid_set = torch.utils.data.Subset(train_na, indices[-heldout:])
+    else:
+        train_set = train_au
+        valid_set = None
+
+    return (train_set, valid_set, test_set)
 
 def save_model(model, filename):
     sd = model.state_dict()
@@ -404,19 +435,20 @@ def read_model(model, filename):
     return model
 
 def ReadClassifier(filename):
-    model = read_model(mnist_classifier(), filename)
+    model = read_model(mnist_model(), filename)
     return Classifier(model)
 
 def experiment():
-    tset, vset = create_mnist_datasets()
+    print("experiment")
+    tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
 
+    npop = 100
+    trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
 
-    npop = 50
-
-    trainers = [Trainer(mnist_classifier(), tset, vset) for i in range(npop)]
     params = {'epochs': 4, 'bs': 100,
-              'lrmin': 1e-4, 'lrmax': 1e-3,
-              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
+              'lrmin': 5e-5, 'lrmax': 5e-4,
+              'pmax' : 0.90, 'pmin' : 0.90, 'pmax2' : 0.90}
+#              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
 
     for n, trainer in enumerate(trainers):
         filename = f"model{n+1}.pt"
@@ -426,35 +458,45 @@ def experiment():
             print(f"TRAINING MODEL: {filename}")
             for i in range(1):
                 one_cycle(trainer, **params)
+                acc, lss = accuracy_t(Classifier(trainer.net), ds=testset, lossftn=nn.CrossEntropyLoss())
+                print(f"test: loss = {lss:.3g}, accuracy = {percent(acc)}")
+
             save_model(trainer.net, filename)
 
     classifiers = [Classifier(trainer.net) for trainer in trainers]
 
-
     perm = np.arange(npop)
     accs = []
-    for i in range(20):
-        np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:35]]
 
-        voter_s = VotingSoftmaxClassifier(subset, 10)
-        acc = accuracy_t(voter_s, lossftn=None, ds=vset, bs=50)
-        n = len(voter_s.classifiers)
-        print(f"Softmax committee of {n} accuracy: {percent(acc)}")
+    for i in range(10):
+        np.random.shuffle(perm)
+        subset = [classifiers[k] for k in perm[:7]]
+
+        voter_s = VotingSoftmaxClassifier(subset, classes=10)
+        acc = accuracy_t(voter_s, ds=testset, bs=25, lossftn=None)
+        n = len(subset)
+        print(f"{i+1}: Softmax committee of {n} accuracy: {percent(acc)}")
         accs.append(acc)
 
     print("mean:", percent(np.mean(accs)), np.mean(accs) )
 
-    return
-
 def main():
-    tset, vset = create_mnist_datasets()
-    trainer = Trainer(mnist_classifier(), tset, vset)
+#    tset, vset, test_set = create_mnist_datasets(heldout=1000, randomize=True)
+    tset, vset, test_set = create_mnist_datasets(heldout=0, randomize=False)
+    print("training set size is", len(tset))
+    print("no holdout, randomize=False, constant pmax")
+
+    trainer = Trainer(mnist_model(), tset, vset)
 
     params = {'epochs': 4, 'bs': 100,
-              'lrmin': 1e-4, 'lrmax': 1e-3,
-              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
-    one_cycle(trainer, **params)
+              'lrmin': 5e-5, 'lrmax': 5e-4,
+              'pmax' : 0.90, 'pmin' : 0.90, 'pmax2' : 0.90}
+
+    cb = one_cycle(trainer, **params)
+    acc, lss = accuracy_t(Classifier(trainer.net), test_set, lossftn=nn.CrossEntropyLoss() )
+    print(f"test set: loss={lss:.3g}, accuracy={percent(acc)}")
+
+    return cb
 
 if __name__ == "__main__":
-    experiment()
+    main()

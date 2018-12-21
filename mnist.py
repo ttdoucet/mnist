@@ -224,12 +224,16 @@ class VotingSoftmaxClassifier():
         self.classes = classes
 
     def __call__(self, x):
+        s = self.softmax(x)
+        return s.max(1)[1]
+
+    def softmax(self, x):
         r = torch.zeros([x.shape[0], self.classes])
         for cl in self.classifiers:
             r += cl.softmax(x).cpu()
-
         r /= self.classes
-        return r.max(1)[1]
+        return r
+
 
 def accuracy_t(classifier, ds, bs=100, lossftn=None):
     batcher = by_epoch(ds, epochs=1, bs=bs)
@@ -382,26 +386,40 @@ def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs
     return recorder
 
 
+def img_normalize(t):
+    c, x, y = t.shape
+    t = t.view(c, -1)
+    t = t - t.mean(dim=1, keepdim=True)
+    t = t / t.std(dim=1, keepdim=True, unbiased=False)
+    return t.view(c, x, y)
+
+
 def create_mnist_datasets(heldout=0, randomize=False):
-    def img_normalize(t):
-        c, x, y = t.shape
-        t = t.view(c, -1)
-        t = t - t.mean(dim=1, keepdim=True)
-        t = t / t.std(dim=1, keepdim=True, unbiased=False)
-        return t.view(c, x, y)
 
     p = Augmentor.Pipeline()
     p.random_distortion(1.0, 4, 4, magnitude=1)
     p.rotate(probability=1.0, max_left_rotation=10, max_right_rotation=10)  # probably good
 
+    cropsize = 25
+
+    q = Augmentor.Pipeline()
+    q.crop_by_size(1.0, cropsize, cropsize, centre=False)
+    q.resize(1.0, 28, 28)
+
     augmented = transforms.Compose([
+                          q.torch_transform(),
                           p.torch_transform(),
                           transforms.ToTensor(),
                           transforms.Lambda(img_normalize)
                        ])
 
 
+    qq = Augmentor.Pipeline()
+    qq.crop_by_size(1.0, cropsize, cropsize, centre=True)
+    qq.resize(1.0, 28, 28)
+
     nonaugmented  = transforms.Compose([
+                          qq.torch_transform(),
                           transforms.ToTensor(),
                           transforms.Lambda(img_normalize)
                        ])
@@ -438,17 +456,31 @@ def ReadClassifier(filename):
     model = read_model(mnist_model(), filename)
     return Classifier(model)
 
+def TTA_Classifier(model, n, classes=10):
+    cl = Classifier(model)
+    tta = [cl for i in range(n)]
+    return VotingSoftmaxClassifier(tta, classes=10)
+
+def trial(trainer, epochs, cycles=1):
+    params = {'epochs': epochs, 'bs': 100,
+              'lrmin': 5e-5, 'lrmax': 5e-4,
+              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
+
+    for i in range(cycles):
+        cb = one_cycle(trainer, **params)
+
+    return cb
+
 def experiment():
     print("experiment")
     tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
 
-    npop = 100
+    npop = 35
     trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
 
-    params = {'epochs': 4, 'bs': 100,
+    params = {'epochs': 8, 'bs': 100,
               'lrmin': 5e-5, 'lrmax': 5e-4,
-              'pmax' : 0.90, 'pmin' : 0.90, 'pmax2' : 0.90}
-#              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
+              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
 
     for n, trainer in enumerate(trainers):
         filename = f"model{n+1}.pt"
@@ -456,21 +488,23 @@ def experiment():
             read_model(trainer.net, filename)
         else:
             print(f"TRAINING MODEL: {filename}")
-            for i in range(1):
-                one_cycle(trainer, **params)
-                acc, lss = accuracy_t(Classifier(trainer.net), ds=testset, lossftn=nn.CrossEntropyLoss())
-                print(f"test: loss = {lss:.3g}, accuracy = {percent(acc)}")
+            # one_cycle(trainer, **params)
+            trial(trainer, epochs=5, cycles=1)
+            acc, lss = accuracy_t(Classifier(trainer.net), ds=testset, lossftn=nn.CrossEntropyLoss())
+            print(f"TEST: loss = {lss:.3g}, accuracy = {percent(acc)}")
 
             save_model(trainer.net, filename)
 
+#    classifiers = [TTA_Classifier(trainer.net, 10) for trainer in trainers]
     classifiers = [Classifier(trainer.net) for trainer in trainers]
 
     perm = np.arange(npop)
     accs = []
 
-    for i in range(10):
+    for i in range(15):
         np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:7]]
+        subset = [classifiers[k] for k in perm[:35]]
+#        subset = [ classifiers[i] ]
 
         voter_s = VotingSoftmaxClassifier(subset, classes=10)
         acc = accuracy_t(voter_s, ds=testset, bs=25, lossftn=None)
@@ -488,15 +522,31 @@ def main():
 
     trainer = Trainer(mnist_model(), tset, vset)
 
-    params = {'epochs': 4, 'bs': 100,
+    params = {'epochs': 8, 'bs': 100,
               'lrmin': 5e-5, 'lrmax': 5e-4,
-              'pmax' : 0.90, 'pmin' : 0.90, 'pmax2' : 0.90}
+              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
 
     cb = one_cycle(trainer, **params)
-    acc, lss = accuracy_t(Classifier(trainer.net), test_set, lossftn=nn.CrossEntropyLoss() )
-    print(f"test set: loss={lss:.3g}, accuracy={percent(acc)}")
+
+    cl = Classifier(trainer.net)
+
+    accs = []
+    samps = 20
+    for i in range(samps):
+        acc, lss = accuracy_t(cl, ds=test_set, bs=25, lossftn=nn.CrossEntropyLoss())
+        print(f"{i+1}: test set: accuracy={percent(acc)}, loss={lss:.3g}")
+        accs.append(acc)
+    print("average:", np.mean(accs))
+
+    tta = [cl for i in range(samps)]
+    voter_tta = VotingSoftmaxClassifier(tta, classes=10)
+    acc = accuracy_t(voter_tta, ds=test_set, bs=25, lossftn=None)
+    print(f"test set: voting accuracy={percent(acc)}")
+
+    # acc, lss = accuracy_t(Classifier(trainer.net), test_set, lossftn=nn.CrossEntropyLoss() )
+    # print(f"test set: loss={lss:.3g}, accuracy={percent(acc)}")
 
     return cb
 
 if __name__ == "__main__":
-    main()
+    experiment()

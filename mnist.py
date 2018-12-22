@@ -239,6 +239,7 @@ def show_mistakes(classifier, ds, dds=None):
     indices, preds, truth = misclassified(classifier, ds)
     labels = [f"{truth[i]} not {preds[i]}" for i in range(len(preds))]
     plot_images(torch.cat([dds[v][0] for v in indices]), labels=labels)
+    plt.show()
 
 # This seems really amateur.
 def misclassified(classifier, ds, bs=100):
@@ -529,9 +530,17 @@ def trial(trainer, epochs, cycles=1):
 
 def experiment():
     print("experiment")
+
+    nonaugmented  = transforms.Compose([
+                          transforms.ToTensor(),
+                          transforms.Lambda(img_normalize)
+                       ])
+
+    testset_na = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
+
     tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
 
-    npop = 35
+    npop = 105
     trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
 
     params = {'epochs': 8, 'bs': 100,
@@ -559,13 +568,14 @@ def experiment():
 
     for i in range(15):
         np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:7]]
+        subset = [classifiers[k] for k in perm[:15]]
 #        subset = [ classifiers[i] ]
 
         voter_s = VotingSoftmaxClassifier(subset, classes=10)
         acc = accuracy_t(voter_s, ds=testset, bs=25, lossftn=None)
         n = len(subset)
         print(f"{i+1}: Softmax committee of {n} accuracy: {percent(acc)}")
+        show_mistakes(voter_s, testset, testset_na)
         accs.append(acc)
 
     print("mean:", percent(np.mean(accs)), np.mean(accs) )

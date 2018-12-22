@@ -234,6 +234,29 @@ class VotingSoftmaxClassifier():
         r /= self.classes
         return r
 
+def show_mistakes(classifier, ds, dds=None):
+    if dds is None: dds = ds
+    indices, preds, truth = misclassified(classifier, ds)
+    labels = [f"{truth[i]} not {preds[i]}" for i in range(len(preds))]
+    plot_images(torch.cat([dds[v][0] for v in indices]), labels=labels)
+
+# This seems really amateur.
+def misclassified(classifier, ds, bs=100):
+    batcher = by_epoch(ds, epochs=1, bs=bs, shuffle=False)
+    wrongs = torch.LongTensor([]).cuda()
+    preds = []
+    for n, (batch, labels) in enumerate(batcher):
+        batch = batch.to("cuda")
+        labels = labels.to("cuda")
+        pred = classifier(batch).to("cuda")
+        idx = torch.nonzero(pred != labels).cuda()
+        gidx = n*bs + idx
+        for s in [int(xx) for xx in pred[idx]]:
+            preds.append(s)
+        wrongs = torch.cat((wrongs, gidx), 0)
+    indices = wrongs.squeeze().tolist()
+    truth = [int(ds[i][1]) for i in indices]
+    return indices, preds, truth
 
 def accuracy_t(classifier, ds, bs=100, lossftn=None):
     batcher = by_epoch(ds, epochs=1, bs=bs)
@@ -245,12 +268,11 @@ def accuracy_t(classifier, ds, bs=100, lossftn=None):
         pred = classifier(batch).to("cuda")
         correct += pred.eq(labels.view_as(pred)).sum().item()
         if lossftn is not None:
-            logits = classifier.logits(batch)
-            tloss += lossftn(logits, labels).item()
+           logits = classifier.logits(batch)
+           tloss += lossftn(logits, labels).item()
     accuracy = correct / (n * bs)
     loss = tloss / n
     return accuracy if lossftn is None else (accuracy, loss)
-
 
 bn_params = {'eps' : 1e-5, 'momentum' : 0.1} # pytorch defaults
 #bn_params = {'eps' : 0.001, 'momentum' : 0.99}# tensorflow defaults
@@ -297,6 +319,40 @@ def mnist_model():
                # Softmax provided during training.
            )
 
+#  Jeremy stuff, playing around
+def conv_layer(ni:int, nf:int, ks:int=3, stride:int=1)->nn.Sequential:
+    "Create Conv2d->BatchNorm2d->LeakyReLu layer: `ni` input, `nf` out filters, `ks` kernel, `stride`:stride."
+    return nn.Sequential(
+        nn.Conv2d(ni, nf, kernel_size=ks, bias=False, stride=stride, padding=ks//2),
+        nn.BatchNorm2d(nf),
+        nn.LeakyReLU(negative_slope=0.1, inplace=True))
+
+def mnist_jeremy_model():
+    def conv(ni,nf): return nn.Conv2d(ni, nf, kernel_size=3, stride=2, padding=1)
+    def conv2(ni,nf): return conv_layer(ni,nf,stride=2)
+    class res_block(nn.Module):
+        def __init__(self, nf):
+            super().__init__()
+            self.conv1 = conv_layer(nf,nf)
+            self.conv2 = conv_layer(nf,nf)
+
+        def forward(self, x): return x + self.conv2(self.conv1(x))
+
+    return nn.Sequential(
+        conv2(1, 8),
+        res_block(8),
+        conv2(8, 16),
+        res_block(16),
+        conv2(16, 32),
+        res_block(32),
+        conv2(32, 16),
+        res_block(16),
+        conv2(16, 10),
+        Flatten()
+    )
+
+# End of Jeremy stuff.
+
 def exponential_decay(v, half_life):
     return lambda n: v * np.power(1/2, n/half_life)
 
@@ -339,7 +395,7 @@ def show_image(v, title=None):
     plt.yticks([])
     img = plt.imshow(v, cmap="Greys", )
 
-def plot_images(batch, title=None):
+def plot_images(batch, title=None, labels=None):
     if type(batch) is torch.Tensor:
         batch = batch.cpu().detach().numpy()
     n = batch.shape[-1]
@@ -355,8 +411,10 @@ def plot_images(batch, title=None):
         plt.subplot(s, s, i+1)
         plt.xticks([])
         plt.yticks([])
-#       plt.axis('off')
+        plt.axis('off')
         plt.imshow(batch[i,:,:], cmap="Greys")
+        if labels is not None:
+            plt.annotate(labels[i], xy=(5,0))
 
 
 def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs):
@@ -385,14 +443,12 @@ def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs
     plt.show()
     return recorder
 
-
 def img_normalize(t):
     c, x, y = t.shape
     t = t.view(c, -1)
     t = t - t.mean(dim=1, keepdim=True)
     t = t / t.std(dim=1, keepdim=True, unbiased=False)
     return t.view(c, x, y)
-
 
 def create_mnist_datasets(heldout=0, randomize=False):
 
@@ -503,7 +559,7 @@ def experiment():
 
     for i in range(15):
         np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:35]]
+        subset = [classifiers[k] for k in perm[:7]]
 #        subset = [ classifiers[i] ]
 
         voter_s = VotingSoftmaxClassifier(subset, classes=10)

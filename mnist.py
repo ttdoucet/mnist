@@ -320,40 +320,6 @@ def mnist_model():
                # Softmax provided during training.
            )
 
-#  Jeremy stuff, playing around
-def conv_layer(ni:int, nf:int, ks:int=3, stride:int=1)->nn.Sequential:
-    "Create Conv2d->BatchNorm2d->LeakyReLu layer: `ni` input, `nf` out filters, `ks` kernel, `stride`:stride."
-    return nn.Sequential(
-        nn.Conv2d(ni, nf, kernel_size=ks, bias=False, stride=stride, padding=ks//2),
-        nn.BatchNorm2d(nf),
-        nn.LeakyReLU(negative_slope=0.1, inplace=True))
-
-def mnist_jeremy_model():
-    def conv(ni,nf): return nn.Conv2d(ni, nf, kernel_size=3, stride=2, padding=1)
-    def conv2(ni,nf): return conv_layer(ni,nf,stride=2)
-    class res_block(nn.Module):
-        def __init__(self, nf):
-            super().__init__()
-            self.conv1 = conv_layer(nf,nf)
-            self.conv2 = conv_layer(nf,nf)
-
-        def forward(self, x): return x + self.conv2(self.conv1(x))
-
-    return nn.Sequential(
-        conv2(1, 8),
-        res_block(8),
-        conv2(8, 16),
-        res_block(16),
-        conv2(16, 32),
-        res_block(32),
-        conv2(32, 16),
-        res_block(16),
-        conv2(16, 10),
-        Flatten()
-    )
-
-# End of Jeremy stuff.
-
 def exponential_decay(v, half_life):
     return lambda n: v * np.power(1/2, n/half_life)
 

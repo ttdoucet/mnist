@@ -336,7 +336,6 @@ def cos_interpolator(a, b, steps):
 def exp_interpolator(a, b, steps):
     return lambda x : a*(b/a)**(x/steps)   
 
-
 def elr(lr, p):
     return lambda x: lr(x) / (1-p(x))
 
@@ -369,9 +368,9 @@ def one_cycle(learner, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85,
     p=schedule(steps, left=pmax, middle=pmin, right=pmax2)
     lr=schedule(steps, left=lrmin, middle=lrmax, right=lrmin2)
 
-    plotfunc(lr, 2*steps, "lr")
-    plotfunc(p, 2*steps, "p")
-    plotfunc(elr(lr, p), 2*steps, "elr")
+    # plotfunc(lr, 2*steps, "lr")
+    # plotfunc(p, 2*steps, "p")
+    # plotfunc(elr(lr, p), 2*steps, "elr")
 
     return learner.train(epochs=2*epochs,
                          bs=bs,
@@ -514,39 +513,22 @@ def ReadClassifier(filename):
     model = read_model(mnist_model(), filename)
     return Classifier(model)
 
-def TTA_Classifier(model, n, classes=10):
-    cl = Classifier(model)
-    tta = [cl for i in range(n)]
-    return VotingSoftmaxClassifier(tta, classes=10)
-
-def trial(trainer, epochs, cycles=1):
-    params = {'epochs': epochs, 'bs': 100,
-              'lrmin': 5e-5, 'lrmax': 5e-4,
-              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
-
-    for i in range(cycles):
-        cb = one_cycle(trainer, **params)
-
-    return cb
-
 def experiment():
-    print("experiment")
-
     nonaugmented  = transforms.Compose([
                           transforms.ToTensor(),
                           transforms.Lambda(img_normalize)
                        ])
-
     testset_na = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
-
     tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
 
-    npop = 105
+    npop = 86
     trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
 
-    params = {'epochs': 8, 'bs': 100,
-              'lrmin': 5e-5, 'lrmax': 5e-4,
-              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
+    lrmax = 5e-4
+    lrmin = lrmax / 25
+    params = {'epochs': 5, 'bs': 100,
+              'lrmin': lrmin, 'lrmax': lrmax,
+              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.7}
 
     for n, trainer in enumerate(trainers):
         filename = f"model{n+1}.pt"
@@ -554,22 +536,20 @@ def experiment():
             read_model(trainer.net, filename)
         else:
             print(f"TRAINING MODEL: {filename}")
-            # one_cycle(trainer, **params)
-            trial(trainer, epochs=5, cycles=1)
+            one_cycle(trainer, **params)
+
             acc, lss = accuracy_t(Classifier(trainer.net), ds=testset, lossftn=nn.CrossEntropyLoss())
             print(f"TEST: loss = {lss:.3g}, accuracy = {percent(acc)}")
-
             save_model(trainer.net, filename)
 
-#    classifiers = [TTA_Classifier(trainer.net, 10) for trainer in trainers]
     classifiers = [Classifier(trainer.net) for trainer in trainers]
 
     perm = np.arange(npop)
     accs = []
 
-    for i in range(15):
+    for i in range(10):
         np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:35]]
+        subset = [classifiers[k] for k in perm[:15]]
 #        subset = [ classifiers[i] ]
 
         voter_s = VotingSoftmaxClassifier(subset, classes=10)

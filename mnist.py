@@ -350,34 +350,36 @@ def plotfunc(f, steps, label=None):
     plt.plot(x)
     if label is not None:
         plt.ylabel(label)
+    plt.grid(True)
     plt.show()
 
 def one_cycle(learner, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85, 
               lrmin2=None, pmax2=None, callback=None, **kwargs):
 
-    def schedule(steps, left, middle, right=None):
+    def schedule(batches, left, middle, right=None):
         if right is None: right=left
-        n = int(2*steps*0.3)
+        n = int(batches * 0.3)
 
         f = cos_interpolator(left, middle, n)
-        g = cos_interpolator(middle, right, 2*steps-n)
+        g = cos_interpolator(middle, right, batches - n)
         return fconcat(f, g, n)
 
-    steps = epochs_to_batches(learner.train_set, epochs, bs)
+    batches = epochs_to_batches(learner.train_set, epochs, bs)
 
-    p=schedule(steps, left=pmax, middle=pmin, right=pmax2)
-    lr=schedule(steps, left=lrmin, middle=lrmax, right=lrmin2)
+    p=schedule(batches, left=pmax, middle=pmin, right=pmax2)
+    lr=schedule(batches, left=lrmin, middle=lrmax, right=lrmin2)
 
-    # plotfunc(lr, 2*steps, "lr")
-    # plotfunc(p, 2*steps, "p")
-    # plotfunc(elr(lr, p), 2*steps, "elr")
+    # plotfunc(lr, batches, "LR")
+    # plotfunc(p, batches, "P")
+    # plotfunc(elr(lr, p), batches, "ELR")
 
-    return learner.train(epochs=2*epochs,
+    return learner.train(epochs=None,
+                         batches=batches,
                          bs=bs,
                          lr=lr,
                          p=p,
                          callback=callback,
-                         report_every=steps//10)
+                         report_every=batches//10)
 
 def percent(n):
     return "%.2f%%" % (100 * n)
@@ -432,16 +434,23 @@ def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs
     recorder = LR_Callback(learner)
 
     lr = exp_interpolator(start, start*10**decades, steps)
-    #p = 0
-    p = 0.90
+    p = 0.90    #p = 0
 
     learner.train(epochs=None, batches=steps, bs=bs, lr=lr, p=p, callback=recorder, **kwargs)
 
-    plt.semilogx(recorder.rates, recorder.losses)
-    plt.xlabel("Learning Rate")
-    plt.ylabel("Loss")
-    plt.grid(True)
-    plt.show()
+    def plotit(rates, losses, xlabel):
+        plt.semilogx(rates, losses)
+        plt.xlabel(xlabel)
+        plt.ylabel("Loss")
+        plt.grid(True)
+        plt.show()
+
+    plotit(recorder.rates, recorder.losses, "Learning Rate")
+
+    rates = np.array(recorder.rates)
+    eff_rates = rates / (1 - p)
+    plotit(eff_rates, recorder.losses, "Eff. Learning Rate")
+
     return recorder
 
 def img_normalize(t):
@@ -521,7 +530,7 @@ def experiment():
     testset_na = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
     tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
 
-    npop = 86
+    npop = 105
     trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
 
     lrmax = 5e-4
@@ -547,9 +556,9 @@ def experiment():
     perm = np.arange(npop)
     accs = []
 
-    for i in range(10):
+    for i in range(15):
         np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:15]]
+        subset = [classifiers[k] for k in perm[:7]]
 #        subset = [ classifiers[i] ]
 
         voter_s = VotingSoftmaxClassifier(subset, classes=10)

@@ -320,32 +320,63 @@ def mnist_model():
                # Softmax provided during training.
            )
 
-def exponential_decay(v, half_life):
-    return lambda n: v * np.power(1/2, n/half_life)
+def fconcat(f, g, steps):
+    return lambda n: f(n) if n < steps else g(n-steps)
 
-def exponential_rise(v, decades, steps):
-    x = np.power(10, decades/steps)
-    return lambda n: v * np.power(x, n)
+def interpolate(a, b, pct):
+    return (1-pct)*a + pct*b
 
-def linear(steps, left, right):
-    m = (right-left)/steps
-    return lambda n: m*n + left
+def linear_interpolator(a, b, steps):
+    return lambda x: interpolate(a, b, x/steps)
 
-def triangular(steps, left, middle, right=None):
-    if right is None: right=left
-    f = linear(steps, left, middle)
-    g = linear(steps, middle, right)
-    return lambda n: f(n) if n<=steps else g(n-steps)
+def cos_interpolator(a, b, steps):
+    def pct(x): return (1 - np.cos(np.pi * x/steps)) / 2
+    return lambda x : interpolate(a, b, pct(x))
+
+def exp_interpolator(a, b, steps):
+    return lambda x : a*(b/a)**(x/steps)   
+
+
+def elr(lr, p):
+    return lambda x: lr(x) / (1-p(x))
+
+def to_p(elr, lr):
+    return lambda x: 1 - (lr(x) / elr(x))
+
+def to_lr(elr, p):
+    return lambda x: elr(x) * (1-p(x))
+
+def plotfunc(f, steps, label=None):
+    x = [f(i) for i in range(steps)]
+    plt.plot(x)
+    if label is not None:
+        plt.ylabel(label)
+    plt.show()
 
 def one_cycle(learner, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85, 
               lrmin2=None, pmax2=None, callback=None, **kwargs):
+
+    def schedule(steps, left, middle, right=None):
+        if right is None: right=left
+        n = int(2*steps*0.3)
+
+        f = cos_interpolator(left, middle, n)
+        g = cos_interpolator(middle, right, 2*steps-n)
+        return fconcat(f, g, n)
+
     steps = epochs_to_batches(learner.train_set, epochs, bs)
-    if lrmin2 is None: lrmin2=lrmin
-    if pmax2 is None: pmax2 = pmax
+
+    p=schedule(steps, left=pmax, middle=pmin, right=pmax2)
+    lr=schedule(steps, left=lrmin, middle=lrmax, right=lrmin2)
+
+    plotfunc(lr, 2*steps, "lr")
+    plotfunc(p, 2*steps, "p")
+    plotfunc(elr(lr, p), 2*steps, "elr")
+
     return learner.train(epochs=2*epochs,
                          bs=bs,
-                         lr=triangular(steps, left=lrmin, middle=lrmax, right=lrmin2),
-                         p=triangular(steps, left=pmax, middle=pmin, right=pmax2),
+                         lr=lr,
+                         p=p,
                          callback=callback,
                          report_every=steps//10)
 
@@ -400,8 +431,12 @@ def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs
             self.rates.append(float(rate))
 
     recorder = LR_Callback(learner)
-    lr = exponential_rise(start, decades, steps)
-    learner.train(epochs=None, batches=steps, bs=bs, lr=lr, callback=recorder, **kwargs)
+
+    lr = exp_interpolator(start, start*10**decades, steps)
+    #p = 0
+    p = 0.90
+
+    learner.train(epochs=None, batches=steps, bs=bs, lr=lr, p=p, callback=recorder, **kwargs)
 
     plt.semilogx(recorder.rates, recorder.losses)
     plt.xlabel("Learning Rate")
@@ -534,14 +569,14 @@ def experiment():
 
     for i in range(15):
         np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:15]]
+        subset = [classifiers[k] for k in perm[:35]]
 #        subset = [ classifiers[i] ]
 
         voter_s = VotingSoftmaxClassifier(subset, classes=10)
         acc = accuracy_t(voter_s, ds=testset, bs=25, lossftn=None)
         n = len(subset)
         print(f"{i+1}: Softmax committee of {n} accuracy: {percent(acc)}")
-        show_mistakes(voter_s, testset, testset_na)
+        # show_mistakes(voter_s, testset, testset_na)
         accs.append(acc)
 
     print("mean:", percent(np.mean(accs)), np.mean(accs) )

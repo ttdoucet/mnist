@@ -236,7 +236,7 @@ class VotingSoftmaxClassifier():
 
 def show_mistakes(classifier, ds, dds=None):
     if dds is None: dds = ds
-    indices, preds, truth = misclassified(classifier, ds)
+    indices, preds, truth = misclassified(classifier, ds, bs=25)
     labels = [f"{truth[i]} not {preds[i]}" for i in range(len(preds))]
     plot_images(torch.cat([dds[v][0] for v in indices]), labels=labels)
     plt.show()
@@ -530,14 +530,14 @@ def experiment():
     testset_na = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
     tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
 
-    npop = 105
+    npop = 35
     trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
 
     lrmax = 5e-4
     lrmin = lrmax / 25
-    params = {'epochs': 5, 'bs': 100,
+    params = {'epochs': 10, 'bs': 100,
               'lrmin': lrmin, 'lrmax': lrmax,
-              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.7}
+              'pmax' : 0.95, 'pmin' : 0.60, 'pmax2' : 0.6}
 
     for n, trainer in enumerate(trainers):
         filename = f"model{n+1}.pt"
@@ -558,7 +558,7 @@ def experiment():
 
     for i in range(15):
         np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:7]]
+        subset = [classifiers[k] for k in perm[:15]]
 #        subset = [ classifiers[i] ]
 
         voter_s = VotingSoftmaxClassifier(subset, classes=10)

@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import math
 import os
 import Augmentor
+from  functools import partial
 
 def epochs_to_batches(ds, epochs, bs):
     return epochs * (len(ds) // bs)
@@ -131,13 +132,17 @@ class AugmentedCallback(ClassifierCallback):
         super().on_train_end()
 
 class Trainer():
-    def __init__(self, model, train_set, validation_set):
+
+    def __init__(self, model, train_set, validation_set,
+                 optimizer=partial(optim.Adam, betas=(0.9, 0.99)) ):  #, loss=nn.CrossEntropyLoss):
         self.train_set = train_set
         self.validation_set = validation_set
         self.stop_requested = False
         self.net = model.to("cuda")
         self.loss = nn.CrossEntropyLoss()
-        self.optimizer = optim.Adam(self.net.parameters(), lr=6.25e-4, eps=1e-8, betas=(0.90, 0.99), weight_decay=0)
+        self.optimizer = optimizer(self.net.parameters(), lr=0.01)
+#       self.optimizer = optim.Adam(self.net.parameters(), lr=0.01, eps=1e-8, betas=(0.90, 0.99), weight_decay=0)
+#        self.optimizer = optim.SGD(self.net.parameters(), lr=0.01, momentum=0, weight_decay=0)
 
     def request_stop(self):
         self.stop_requested = True
@@ -167,9 +172,15 @@ class Trainer():
 
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = learning_rate
-                # specific to Adam
-                betas = param_group['betas']
-                param_group['betas'] = (momentum, betas[1])
+                if 'betas' in param_group.keys():
+                    # specific to Adam
+                    betas = param_group['betas']
+                    param_group['betas'] = (momentum, betas[1])
+                elif 'momentum' in param_group.keys():
+                    param_group['momentum'] = momentum
+                else:
+                    raise KeyError("Cannot find momentum in param_group")
+
 
             batch = xs.to("cuda")
             labels = ys.to("cuda")
@@ -206,6 +217,7 @@ class Classifier():
     def softmax(self, x):
         return F.softmax(self.eval(x), 1)
 
+# nobody uses this anymore
 class VotingClassifier():
     def __init__(self, classifiers, classes=10):
         self.classifiers = classifiers
@@ -354,7 +366,7 @@ def plotfunc(f, steps, label=None):
     plt.show()
 
 def one_cycle(learner, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85, 
-              lrmin2=None, pmax2=None, callback=None, **kwargs):
+              lrmin2=None, pmax2=None, callback=None, plot=False, **kwargs):
 
     def schedule(batches, left, middle, right=None):
         if right is None: right=left
@@ -369,9 +381,20 @@ def one_cycle(learner, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85,
     p=schedule(batches, left=pmax, middle=pmin, right=pmax2)
     lr=schedule(batches, left=lrmin, middle=lrmax, right=lrmin2)
 
-    # plotfunc(lr, batches, "LR")
-    # plotfunc(p, batches, "P")
-    # plotfunc(elr(lr, p), batches, "ELR")
+    if plot:
+        plotfunc(lr, batches, "LR")
+        plotfunc(p, batches, "P")
+        elrf = elr(lr, p)
+
+        plotfunc(elrf, batches, "ELR")
+        cumsum = np.cumsum([elrf(i) for i in range(batches)])
+        plt.plot(cumsum) 
+        plt.ylabel("Sum ELR")
+        plt.grid(True)
+        plt.show()
+
+        print("lr at end is", lr(batches-1))
+        print("elr at end is", elrf(batches-1))
 
     return learner.train(epochs=None,
                          batches=batches,
@@ -416,7 +439,7 @@ def plot_images(batch, title=None, labels=None):
             plt.annotate(labels[i], xy=(5,0))
 
 
-def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs):
+def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=2500, p=0.90, **kwargs):
     class LR_Callback(Callback):
         def __init__(self, learner):
             super().__init__(learner)
@@ -434,7 +457,7 @@ def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=500, **kwargs
     recorder = LR_Callback(learner)
 
     lr = exp_interpolator(start, start*10**decades, steps)
-    p = 0.90    #p = 0
+    # p = 0.90    #p = 0
 
     learner.train(epochs=None, batches=steps, bs=bs, lr=lr, p=p, callback=recorder, **kwargs)
 
@@ -530,14 +553,22 @@ def experiment():
     testset_na = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
     tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
 
-    npop = 35
+    npop = 105
     trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
 
-    lrmax = 5e-4
-    lrmin = lrmax / 25
+
+    lr_eff = 0.001
+    pmax = 0.95
+    pmin = 0.60
+    pmax2 = 0.60
+
     params = {'epochs': 10, 'bs': 100,
-              'lrmin': lrmin, 'lrmax': lrmax,
-              'pmax' : 0.95, 'pmin' : 0.60, 'pmax2' : 0.6}
+              'lrmin': (1.0 - pmax) * lr_eff,
+              'lrmax': (1.0 - pmin) * lr_eff,
+              'lrmin2': (1.0 - pmax2) * (lr_eff / 25),
+              'pmax' : pmax,
+              'pmin' : pmin,
+              'pmax2' : pmax2}
 
     for n, trainer in enumerate(trainers):
         filename = f"model{n+1}.pt"
@@ -545,7 +576,7 @@ def experiment():
             read_model(trainer.net, filename)
         else:
             print(f"TRAINING MODEL: {filename}")
-            one_cycle(trainer, **params)
+            one_cycle(trainer, plot=False, **params)
 
             acc, lss = accuracy_t(Classifier(trainer.net), ds=testset, lossftn=nn.CrossEntropyLoss())
             print(f"TEST: loss = {lss:.3g}, accuracy = {percent(acc)}")
@@ -556,10 +587,9 @@ def experiment():
     perm = np.arange(npop)
     accs = []
 
-    for i in range(15):
+    for i in range(20):
         np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:15]]
-#        subset = [ classifiers[i] ]
+        subset = [classifiers[k] for k in perm[:35]]
 
         voter_s = VotingSoftmaxClassifier(subset, classes=10)
         acc = accuracy_t(voter_s, ds=testset, bs=25, lossftn=None)
@@ -570,39 +600,6 @@ def experiment():
 
     print("mean:", percent(np.mean(accs)), np.mean(accs) )
 
-def main():
-#    tset, vset, test_set = create_mnist_datasets(heldout=1000, randomize=True)
-    tset, vset, test_set = create_mnist_datasets(heldout=0, randomize=False)
-    print("training set size is", len(tset))
-    print("no holdout, randomize=False, constant pmax")
-
-    trainer = Trainer(mnist_model(), tset, vset)
-
-    params = {'epochs': 8, 'bs': 100,
-              'lrmin': 5e-5, 'lrmax': 5e-4,
-              'pmax' : 0.95, 'pmin' : 0.70, 'pmax2' : 0.70}
-
-    cb = one_cycle(trainer, **params)
-
-    cl = Classifier(trainer.net)
-
-    accs = []
-    samps = 20
-    for i in range(samps):
-        acc, lss = accuracy_t(cl, ds=test_set, bs=25, lossftn=nn.CrossEntropyLoss())
-        print(f"{i+1}: test set: accuracy={percent(acc)}, loss={lss:.3g}")
-        accs.append(acc)
-    print("average:", np.mean(accs))
-
-    tta = [cl for i in range(samps)]
-    voter_tta = VotingSoftmaxClassifier(tta, classes=10)
-    acc = accuracy_t(voter_tta, ds=test_set, bs=25, lossftn=None)
-    print(f"test set: voting accuracy={percent(acc)}")
-
-    # acc, lss = accuracy_t(Classifier(trainer.net), test_set, lossftn=nn.CrossEntropyLoss() )
-    # print(f"test set: loss={lss:.3g}, accuracy={percent(acc)}")
-
-    return cb
 
 if __name__ == "__main__":
     experiment()

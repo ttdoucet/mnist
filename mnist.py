@@ -228,11 +228,11 @@ class VotingSoftmaxClassifier():
             return torch.argmax(s, 1)
 
     def softmax(self, x):
-        r = torch.zeros([x.shape[0], self.classes]).cuda() #
+        r = torch.zeros([x.shape[0], self.classes]).cuda()
         x = x.cuda()
         for cl in self.classifiers:
             r += cl.softmax(x)
-        r /= self.classes
+        r /= len(self.classifiers)
         return r
 
 def show_mistakes(classifier, ds, dds=None):
@@ -264,12 +264,11 @@ def accuracy_t(classifier, ds, bs=100, lossftn=None):
     batcher = Batcher(ds, epochs=1, bs=bs)
     correct = tloss = 0
     for n, (batch, labels) in enumerate(batcher, 1):
-        pred = classifier(batch)
-        labels = labels.cuda()
-        correct += (pred.cuda() == labels).sum().item()
+        predictions = classifier(batch).cpu()
+        correct += (predictions == labels).sum().item()
         if lossftn is not None:
            logits = classifier.logits(batch)
-           tloss += lossftn(logits, labels).item()
+           tloss += lossftn(logits, labels.cuda()).item()
     accuracy = correct / (n * bs)
     loss = tloss / n
     return accuracy if lossftn is None else (accuracy, loss)
@@ -539,7 +538,7 @@ def experiment():
     testset_na = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
     tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
 
-    npop = 6
+    npop = 1
     trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
 
     lr_eff = 0.001
@@ -558,6 +557,7 @@ def experiment():
     for n, trainer in enumerate(trainers):
         filename = f"model{n+1}.pt"
         if os.path.isfile(filename):
+            print("reading", filename)
             read_model(trainer.net, filename)
         else:
             print(f"TRAINING MODEL: {filename}")
@@ -572,7 +572,7 @@ def experiment():
     perm = np.arange(npop)
     accs = []
 
-    for i in range(5):
+    for i in range(1):
         np.random.shuffle(perm)
         subset = [classifiers[k] for k in perm[:35]]
 

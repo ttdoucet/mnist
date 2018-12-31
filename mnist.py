@@ -14,24 +14,31 @@ from  functools import partial
 def epochs_to_batches(ds, epochs, bs):
     return epochs * (len(ds) // bs)
 
-def by_epoch(ds, epochs=1, bs=1, shuffle=True):
-    for epoch in range(epochs):
-        batcher = torch.utils.data.DataLoader(ds, batch_size=bs, shuffle=shuffle, num_workers=4, drop_last=True)
-        for data, labels in batcher:
-            yield (data, labels)
+def Batcher(ds, epochs=None, batches=None, bs=1, shuffle=True):
 
-def by_batch(ds, batches=None, bs=1, shuffle=True):
-    n = 1
-    while True:
-        for n, (data, labels) in enumerate(by_epoch(ds, 1, bs, shuffle), n) :
-            yield (data, labels)
-            if n == batches:
-                return
+    def by_epoch(ds, epochs=1, bs=1, shuffle=True):
+        for epoch in range(epochs):
+            batcher = torch.utils.data.DataLoader(ds, batch_size=bs, shuffle=shuffle,
+                                                  num_workers=4, drop_last=True)
+            for data, labels in batcher:
+                yield (data, labels)
+
+    def by_batch(ds, batches=None, bs=1, shuffle=True):
+        n = 1
+        while True:
+            for n, (data, labels) in enumerate(by_epoch(ds, 1, bs, shuffle), n) :
+                yield (data, labels)
+                if n == batches:
+                    return
+
+    if epochs is not None:
+        return by_epoch(ds, epochs, bs, shuffle)
+    else :
+        return by_batch(ds, batches, bs, shuffle)
 
 class Callback():
     def __init__(self, learner):
         self.learner = learner
-
     def on_train_begin(self):
         pass
     def on_train_step(self, step, loss, rate, mom, xs, ys):
@@ -56,9 +63,6 @@ class ClassifierCallback(Callback):
         if self.learner.validation_set is not None:
             self.accuracy_report(self.learner.validation_set,
                                  "  validation", bs=50)
-#       self.accuracy_report(self.learner.train_set,
-#                            "       train", bs=50)
-
         
     def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
 
@@ -79,7 +83,6 @@ class ClassifierCallback(Callback):
 
     def on_train_end(self):
         print("training ends")
-        #self.report()
 
 class filter():
     def __init__(self, tc=0.9):
@@ -97,7 +100,7 @@ class AugmentedCallback(ClassifierCallback):
     def __init__(self, learner):
         self.learner = learner
         super().__init__(learner)
-        self.vbatcher = by_batch(self.learner.validation_set, bs=100)
+        self.vbatcher = Batcher(self.learner.validation_set, bs=100)
         self.classifier = Classifier(self.learner.net)
 
     def on_train_begin(self):
@@ -110,7 +113,8 @@ class AugmentedCallback(ClassifierCallback):
 
         # We sample the validation loss
         images, labels = next(iter(self.vbatcher))
-        logits = self.classifier.logits(images.to("cuda"))
+#        logits = self.classifier.logits(images.to("cuda"))
+        logits = self.classifier.logits(images)
         ce_loss = self.learner.loss(logits, labels.to("cuda")).data.item()
         self.vlosses.append(ce_loss)
 
@@ -147,7 +151,7 @@ class Trainer():
     def request_stop(self):
         self.stop_requested = True
         
-    def train(self, epochs=1, batches=None, bs=64, lr=0.03, p=0.90, report_every=100, callback=None, **kwargs):
+    def train(self, epochs=None, batches=None, bs=64, lr=0.03, p=0.90, report_every=100, callback=None, **kwargs):
 
         self.stop_requested = False;
         if callback is None:
@@ -155,10 +159,10 @@ class Trainer():
 
         if epochs is not None:
             print(f"epochs: {epochs}, batch size: {bs}, batches: {epochs_to_batches(self.train_set, epochs, bs)}")
-            batcher = by_epoch(self.train_set, epochs, bs, shuffle=True)
         else:
             print(f"batch size: {bs}, batches: {batches}")
-            batcher = by_batch(self.train_set, batches, bs, shuffle=True)
+
+        batcher = Batcher(self.train_set, epochs, batches, bs, shuffle=True)
 
         callback.on_train_begin()
 
@@ -181,12 +185,10 @@ class Trainer():
                 else:
                     raise KeyError("Cannot find momentum in param_group")
 
-
             batch = xs.to("cuda")
             labels = ys.to("cuda")
 
             self.net.train()
-
             pred = self.net(batch)
             ce_loss = self.loss(pred, labels)
             self.optimizer.zero_grad()
@@ -204,31 +206,16 @@ class Classifier():
         self.device = device
         self.model = model.to(device)
 
-    def eval(self, x):
-        self.model.eval()
-        return self.model(x.detach().to(self.device))
+    def logits(self, x):
+        with torch.no_grad():
+            self.model.eval()
+            return self.model(x.to(self.device))
 
     def __call__(self, x):
-        return self.softmax(x).max(1, keepdim=False)[1]
-
-    def logits(self, x):
-        return self.eval(x.detach())
+        return torch.argmax(self.softmax(x), 1)
 
     def softmax(self, x):
-        return F.softmax(self.eval(x), 1)
-
-# nobody uses this anymore
-class VotingClassifier():
-    def __init__(self, classifiers, classes=10):
-        self.classifiers = classifiers
-        self.classes = classes
-
-    def __call__(self, x):
-        r = torch.zeros([x.shape[0], self.classes])
-        one_hot = torch.eye(self.classes)
-        for cl in self.classifiers:
-            r += one_hot[ cl(x) ]
-        return r.max(1)[1]
+        return F.softmax(self.logits(x), dim=1)
 
 class VotingSoftmaxClassifier():
     def __init__(self, classifiers, classes=10):
@@ -236,13 +223,15 @@ class VotingSoftmaxClassifier():
         self.classes = classes
 
     def __call__(self, x):
-        s = self.softmax(x)
-        return s.max(1)[1]
+        with torch.no_grad():
+            s = self.softmax(x)
+            return torch.argmax(s, 1)
 
     def softmax(self, x):
-        r = torch.zeros([x.shape[0], self.classes])
+        r = torch.zeros([x.shape[0], self.classes]).cuda() #
+        x = x.cuda()
         for cl in self.classifiers:
-            r += cl.softmax(x).cpu()
+            r += cl.softmax(x)
         r /= self.classes
         return r
 
@@ -255,7 +244,7 @@ def show_mistakes(classifier, ds, dds=None):
 
 # This seems really amateur.
 def misclassified(classifier, ds, bs=100):
-    batcher = by_epoch(ds, epochs=1, bs=bs, shuffle=False)
+    batcher = Batcher(ds, epochs=1, bs=bs, shuffle=False)
     wrongs = torch.LongTensor([]).cuda()
     preds = []
     for n, (batch, labels) in enumerate(batcher):
@@ -272,14 +261,12 @@ def misclassified(classifier, ds, bs=100):
     return indices, preds, truth
 
 def accuracy_t(classifier, ds, bs=100, lossftn=None):
-    batcher = by_epoch(ds, epochs=1, bs=bs)
-    correct = 0
-    tloss = 0
+    batcher = Batcher(ds, epochs=1, bs=bs)
+    correct = tloss = 0
     for n, (batch, labels) in enumerate(batcher, 1):
-        batch = batch.to("cuda")
-        labels = labels.to("cuda")
-        pred = classifier(batch).to("cuda")
-        correct += pred.eq(labels.view_as(pred)).sum().item()
+        pred = classifier(batch)
+        labels = labels.cuda()
+        correct += (pred.cuda() == labels).sum().item()
         if lossftn is not None:
            logits = classifier.logits(batch)
            tloss += lossftn(logits, labels).item()
@@ -287,13 +274,10 @@ def accuracy_t(classifier, ds, bs=100, lossftn=None):
     loss = tloss / n
     return accuracy if lossftn is None else (accuracy, loss)
 
-bn_params = {'eps' : 1e-5, 'momentum' : 0.1} # pytorch defaults
-#bn_params = {'eps' : 0.001, 'momentum' : 0.99}# tensorflow defaults
-
 class Residual(nn.Module):
     def __init__(self, d):
         super().__init__()
-        self.bn = nn.BatchNorm2d(d, **bn_params)
+        self.bn = nn.BatchNorm2d(d)
         self.conv3x3 = nn.Conv2d(in_channels=d, out_channels=d, kernel_size=3, padding=1)
 
     def forward(self, x):
@@ -313,21 +297,24 @@ def mnist_model():
                nn.MaxPool2d(2),
                Residual(128),
 
-               nn.BatchNorm2d(128, **bn_params),
+               nn.BatchNorm2d(128),
                nn.Conv2d(128, 256, 3, padding=1),
                nn.ReLU(),
                nn.MaxPool2d(2),
                Residual(256),
 
-               nn.BatchNorm2d(256, **bn_params),
+               nn.BatchNorm2d(256),
                nn.Conv2d(256, 512, 3, padding=1),
                nn.ReLU(),
                nn.MaxPool2d(2, ceil_mode=True),
                Residual(512),
 
-               nn.BatchNorm2d(512, **bn_params),
+               nn.BatchNorm2d(512),
                nn.AvgPool2d(kernel_size=4),
                Flatten(),
+
+               nn.Dropout(p=0.20),
+
                nn.Linear(512,10),
                # Softmax provided during training.
            )
@@ -362,6 +349,7 @@ def plotfunc(f, steps, label=None):
     plt.plot(x)
     if label is not None:
         plt.ylabel(label)
+        plt.xlabel("batch")
     plt.grid(True)
     plt.show()
 
@@ -457,8 +445,6 @@ def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=2500, p=0.90,
     recorder = LR_Callback(learner)
 
     lr = exp_interpolator(start, start*10**decades, steps)
-    # p = 0.90    #p = 0
-
     learner.train(epochs=None, batches=steps, bs=bs, lr=lr, p=p, callback=recorder, **kwargs)
 
     def plotit(rates, losses, xlabel):
@@ -553,9 +539,8 @@ def experiment():
     testset_na = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
     tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
 
-    npop = 105
+    npop = 6
     trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
-
 
     lr_eff = 0.001
     pmax = 0.95
@@ -587,12 +572,12 @@ def experiment():
     perm = np.arange(npop)
     accs = []
 
-    for i in range(20):
+    for i in range(5):
         np.random.shuffle(perm)
         subset = [classifiers[k] for k in perm[:35]]
 
         voter_s = VotingSoftmaxClassifier(subset, classes=10)
-        acc = accuracy_t(voter_s, ds=testset, bs=25, lossftn=None)
+        acc = accuracy_t(voter_s, ds=testset, bs=100, lossftn=None)
         n = len(subset)
         print(f"{i+1}: Softmax committee of {n} accuracy: {percent(acc)}")
         # show_mistakes(voter_s, testset, testset_na)

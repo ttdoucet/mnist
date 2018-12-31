@@ -228,37 +228,25 @@ class VotingSoftmaxClassifier():
             return torch.argmax(s, 1)
 
     def softmax(self, x):
-        r = torch.zeros([x.shape[0], self.classes]).cuda()
-        x = x.cuda()
+        r = 0
         for cl in self.classifiers:
             r += cl.softmax(x)
-        r /= len(self.classifiers)
-        return r
+        return r / len(self.classifiers)
 
 def show_mistakes(classifier, ds, dds=None):
     if dds is None: dds = ds
-    indices, preds, truth = misclassified(classifier, ds, bs=25)
-    labels = [f"{truth[i]} not {preds[i]}" for i in range(len(preds))]
-    plot_images(torch.cat([dds[v][0] for v in indices]), labels=labels)
+    mistakes = [m for m in misclassified(classifier, ds)]
+    labels = [f"{ds[index][1]} not {pred}" for (index, pred) in mistakes ]
+    plot_images(torch.cat([dds[index][0] for (index, _)  in mistakes]), labels=labels)
     plt.show()
 
-# This seems really amateur.
 def misclassified(classifier, ds, bs=100):
     batcher = Batcher(ds, epochs=1, bs=bs, shuffle=False)
-    wrongs = torch.LongTensor([]).cuda()
-    preds = []
     for n, (batch, labels) in enumerate(batcher):
-        batch = batch.to("cuda")
-        labels = labels.to("cuda")
-        pred = classifier(batch).to("cuda")
-        idx = torch.nonzero(pred != labels).cuda()
-        gidx = n*bs + idx
-        for s in [int(xx) for xx in pred[idx]]:
-            preds.append(s)
-        wrongs = torch.cat((wrongs, gidx), 0)
-    indices = wrongs.squeeze().tolist()
-    truth = [int(ds[i][1]) for i in indices]
-    return indices, preds, truth
+        pred = classifier(batch).cpu()
+        mistakes = torch.nonzero(pred != labels)
+        for i in mistakes:
+            yield (int(i) + n*bs, int(pred[i]) )
 
 def accuracy_t(classifier, ds, bs=100, lossftn=None):
     batcher = Batcher(ds, epochs=1, bs=bs)
@@ -538,7 +526,7 @@ def experiment():
     testset_na = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
     tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
 
-    npop = 1
+    npop = 7
     trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
 
     lr_eff = 0.001
@@ -580,7 +568,7 @@ def experiment():
         acc = accuracy_t(voter_s, ds=testset, bs=100, lossftn=None)
         n = len(subset)
         print(f"{i+1}: Softmax committee of {n} accuracy: {percent(acc)}")
-        # show_mistakes(voter_s, testset, testset_na)
+        show_mistakes(voter_s, testset, testset_na)
         accs.append(acc)
 
     print("mean:", percent(np.mean(accs)), np.mean(accs) )

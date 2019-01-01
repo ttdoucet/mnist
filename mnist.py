@@ -4,7 +4,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torchvision import datasets, transforms
 import numpy as np
-import itertools
 import matplotlib.pyplot as plt
 import math
 import os
@@ -33,7 +32,7 @@ def Batcher(ds, epochs=None, batches=None, bs=1, shuffle=True):
 
     if epochs is not None:
         return by_epoch(ds, epochs, bs, shuffle)
-    else :
+    else:
         return by_batch(ds, batches, bs, shuffle)
 
 class Callback():
@@ -136,7 +135,6 @@ class AugmentedCallback(ClassifierCallback):
         super().on_train_end()
 
 class Trainer():
-
     def __init__(self, model, train_set, validation_set,
                  optimizer=partial(optim.Adam, betas=(0.9, 0.99)) ):  #, loss=nn.CrossEntropyLoss):
         self.train_set = train_set
@@ -145,6 +143,8 @@ class Trainer():
         self.net = model.to("cuda")
         self.loss = nn.CrossEntropyLoss()
         self.optimizer = optimizer(self.net.parameters(), lr=0.01)
+#       print("optimizer defaults:", self.optimizer.defaults)
+
 #       self.optimizer = optim.Adam(self.net.parameters(), lr=0.01, eps=1e-8, betas=(0.90, 0.99), weight_decay=0)
 #        self.optimizer = optim.SGD(self.net.parameters(), lr=0.01, momentum=0, weight_decay=0)
 
@@ -209,7 +209,9 @@ class Classifier():
     def logits(self, x):
         with torch.no_grad():
             self.model.eval()
-            return self.model(x.to(self.device))
+#            return self.model(x.to(self.device))
+# hmmmm
+            return self.model(x.detach().to(self.device))
 
     def __call__(self, x):
         return torch.argmax(self.softmax(x), 1)
@@ -218,9 +220,8 @@ class Classifier():
         return F.softmax(self.logits(x), dim=1)
 
 class VotingSoftmaxClassifier():
-    def __init__(self, classifiers, classes=10):
+    def __init__(self, classifiers):
         self.classifiers = classifiers
-        self.classes = classes
 
     def __call__(self, x):
         with torch.no_grad():
@@ -300,8 +301,6 @@ def mnist_model():
                nn.AvgPool2d(kernel_size=4),
                Flatten(),
 
-               nn.Dropout(p=0.20),
-
                nn.Linear(512,10),
                # Softmax provided during training.
            )
@@ -340,7 +339,7 @@ def plotfunc(f, steps, label=None):
     plt.grid(True)
     plt.show()
 
-def one_cycle(learner, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85, 
+def one_cycle(trainer, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85, 
               lrmin2=None, pmax2=None, callback=None, plot=False, **kwargs):
 
     def schedule(batches, left, middle, right=None):
@@ -351,7 +350,7 @@ def one_cycle(learner, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85,
         g = cos_interpolator(middle, right, batches - n)
         return fconcat(f, g, n)
 
-    batches = epochs_to_batches(learner.train_set, epochs, bs)
+    batches = epochs_to_batches(trainer.train_set, epochs, bs)
 
     p=schedule(batches, left=pmax, middle=pmin, right=pmax2)
     lr=schedule(batches, left=lrmin, middle=lrmax, right=lrmin2)
@@ -371,7 +370,7 @@ def one_cycle(learner, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85,
         print("lr at end is", lr(batches-1))
         print("elr at end is", elrf(batches-1))
 
-    return learner.train(epochs=None,
+    return trainer.train(epochs=None,
                          batches=batches,
                          bs=bs,
                          lr=lr,
@@ -414,25 +413,25 @@ def plot_images(batch, title=None, labels=None):
             plt.annotate(labels[i], xy=(5,0))
 
 
-def lr_find(learner, bs, batches=500, start=1e-6, decades=7, steps=2500, p=0.90, **kwargs):
+def lr_find(trainer, bs, batches=500, start=1e-6, decades=7, steps=2500, p=0.90, **kwargs):
     class LR_Callback(Callback):
-        def __init__(self, learner):
-            super().__init__(learner)
+        def __init__(self, trainer):
+            super().__init__(trainer)
             self.losses = []
             self.rates = []
             self.best = math.inf
 
         def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
             if (loss > 4 * self.best) and (loss > 2) and (step > 50):
-                self.learner.request_stop()
+                self.trainer.request_stop()
             self.best = min(self.best, loss)
             self.losses.append(loss)
             self.rates.append(float(rate))
 
-    recorder = LR_Callback(learner)
+    recorder = LR_Callback(trainer)
 
     lr = exp_interpolator(start, start*10**decades, steps)
-    learner.train(epochs=None, batches=steps, bs=bs, lr=lr, p=p, callback=recorder, **kwargs)
+    trainer.train(epochs=None, batches=steps, bs=bs, lr=lr, p=p, callback=recorder, **kwargs)
 
     def plotit(rates, losses, xlabel):
         plt.semilogx(rates, losses)
@@ -518,61 +517,3 @@ def ReadClassifier(filename):
     model = read_model(mnist_model(), filename)
     return Classifier(model)
 
-def experiment():
-    nonaugmented  = transforms.Compose([
-                          transforms.ToTensor(),
-                          transforms.Lambda(img_normalize)
-                       ])
-    testset_na = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
-    tset, vset, testset = create_mnist_datasets(heldout=0, randomize=False)
-
-    npop = 7
-    trainers = [Trainer(mnist_model(), tset, vset) for i in range(npop)]
-
-    lr_eff = 0.001
-    pmax = 0.95
-    pmin = 0.60
-    pmax2 = 0.60
-
-    params = {'epochs': 10, 'bs': 100,
-              'lrmin': (1.0 - pmax) * lr_eff,
-              'lrmax': (1.0 - pmin) * lr_eff,
-              'lrmin2': (1.0 - pmax2) * (lr_eff / 25),
-              'pmax' : pmax,
-              'pmin' : pmin,
-              'pmax2' : pmax2}
-
-    for n, trainer in enumerate(trainers):
-        filename = f"model{n+1}.pt"
-        if os.path.isfile(filename):
-            print("reading", filename)
-            read_model(trainer.net, filename)
-        else:
-            print(f"TRAINING MODEL: {filename}")
-            one_cycle(trainer, plot=False, **params)
-
-            acc, lss = accuracy_t(Classifier(trainer.net), ds=testset, lossftn=nn.CrossEntropyLoss())
-            print(f"TEST: loss = {lss:.3g}, accuracy = {percent(acc)}")
-            save_model(trainer.net, filename)
-
-    classifiers = [Classifier(trainer.net) for trainer in trainers]
-
-    perm = np.arange(npop)
-    accs = []
-
-    for i in range(1):
-        np.random.shuffle(perm)
-        subset = [classifiers[k] for k in perm[:35]]
-
-        voter_s = VotingSoftmaxClassifier(subset, classes=10)
-        acc = accuracy_t(voter_s, ds=testset, bs=100, lossftn=None)
-        n = len(subset)
-        print(f"{i+1}: Softmax committee of {n} accuracy: {percent(acc)}")
-        show_mistakes(voter_s, testset, testset_na)
-        accs.append(acc)
-
-    print("mean:", percent(np.mean(accs)), np.mean(accs) )
-
-
-if __name__ == "__main__":
-    experiment()

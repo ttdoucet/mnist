@@ -209,8 +209,6 @@ class Classifier():
     def logits(self, x):
         with torch.no_grad():
             self.model.eval()
-#            return self.model(x.to(self.device))
-# hmmmm
             return self.model(x.detach().to(self.device))
 
     def __call__(self, x):

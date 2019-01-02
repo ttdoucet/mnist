@@ -242,7 +242,7 @@ def misclassified(classifier, ds, bs=100):
         for i in mistakes:
             yield (int(i) + n*bs, int(pred[i]) )
 
-def accuracy_t(classifier, ds, bs=100, lossftn=None):
+def accuracy(classifier, ds, bs=100, lossftn=None):
     "Computes classifer accuracy and optionally loss on a dataset."
     batcher = Batcher(ds, epochs=1, bs=bs)
     correct = tloss = 0

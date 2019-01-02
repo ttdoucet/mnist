@@ -204,7 +204,7 @@ class Classifier():
         "The probability distribution underlying the prediction."
         return F.softmax(self.logits(x), dim=1)
 
-class VotingSoftmaxClassifier():
+class VotingClassifier():
     "Combines a set of classifiers into a committee."
     def __init__(self, classifiers):
         self.classifiers = classifiers

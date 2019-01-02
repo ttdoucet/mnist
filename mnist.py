@@ -140,9 +140,11 @@ class Trainer():
         self.optimizer = optimizer(self.net.parameters(), lr=0.01)
 
     def request_stop(self):
+        "A Callback can request that training stop."
         self.stop_requested = True
         
     def train(self, epochs=None, batches=None, bs=64, lr=0.03, p=0.90, callback=None, **kwargs):
+        "The training loop--calls out to Callback at appropriate points."
 
         self.stop_requested = False;
         if callback is None:
@@ -195,9 +197,11 @@ class Classifier():
             return self.model(x.detach().to(self.device))
 
     def __call__(self, x):
+        "Classifies a batch into predicted labels."
         return torch.argmax(self.softmax(x), 1)
 
     def softmax(self, x):
+        "The probability distribution underlying the prediction."
         return F.softmax(self.logits(x), dim=1)
 
 class VotingSoftmaxClassifier():
@@ -206,11 +210,13 @@ class VotingSoftmaxClassifier():
         self.classifiers = classifiers
 
     def __call__(self, x):
+        "Committee classification of batch."
         with torch.no_grad():
             s = self.softmax(x)
             return torch.argmax(s, 1)
 
     def softmax(self, x):
+        "Combined probability distribution from committee."
         r = 0
         for cl in self.classifiers:
             r += cl.softmax(x)

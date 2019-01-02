@@ -9,6 +9,8 @@ import math
 import os
 import Augmentor
 from  functools import partial
+from tqdm.auto import tqdm
+
 
 def epochs_to_batches(ds, epochs, bs):
     return epochs * (len(ds) // bs)
@@ -23,9 +25,9 @@ def Batcher(ds, epochs=None, batches=None, bs=1, shuffle=True):
                 yield (data, labels)
 
     def by_batch(ds, batches=None, bs=1, shuffle=True):
-        n = 1
+        n = 0
         while True:
-            for n, (data, labels) in enumerate(by_epoch(ds, 1, bs, shuffle), n) :
+            for n, (data, labels) in enumerate(by_epoch(ds, 1, bs, shuffle), n+1) :
                 yield (data, labels)
                 if n == batches:
                     return
@@ -36,52 +38,19 @@ def Batcher(ds, epochs=None, batches=None, bs=1, shuffle=True):
         return by_batch(ds, batches, bs, shuffle)
 
 class Callback():
-    def __init__(self, learner):
-        self.learner = learner
-    def on_train_begin(self):
-        pass
-    def on_train_step(self, step, loss, rate, mom, xs, ys):
-        pass
-    def on_train_end(self):
-        pass
-    
-class ClassifierCallback(Callback):
-    def __init__(self, learner):
-        self.learner = learner
+    def __init__(self, trainer):
+        self.trainer = trainer
 
     def on_train_begin(self):
-        print("training begins")
         self.losses = []
         self.rates =  []
 
-    def accuracy_report(self, dataset, tag, bs):
-        acc, lss = accuracy_t(Classifier(self.learner.net), dataset, lossftn=self.learner.loss)
-        print(f"{tag}: loss = {lss:.3g}, accuracy = {percent(acc)}")
-
-    def report(self):
-        if self.learner.validation_set is not None:
-            self.accuracy_report(self.learner.validation_set,
-                                 "  validation", bs=50)
-        
-    def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
-
-        def accuracy(predictions, actual):
-            errors = np.where(predictions != actual)[0]
-            return 1.0 - len(errors) / len(actual)
-
+    def on_train_step(self, loss, rate):
         self.losses.append(loss)
         self.rates.append(rate)
-        step += 1
-
-        if (step == 1) or (step % report_every == 0):
-            acc = accuracy( (Classifier(self.learner.net)(xs)).cpu().numpy(), ys.numpy())
-            print(f"batch {step}: loss = {loss:.3g}, lr = {rate:.3g}, p = {mom:.3g}, accuracy = {percent(acc)}")
-
-        if (step % (10 * report_every) == 0):
-            self.report()
 
     def on_train_end(self):
-        print("training ends")
+        pass
 
 class filter():
     def __init__(self, tc=0.9):
@@ -95,29 +64,24 @@ class filter():
             self.a = self.tc * self.a + (1-self.tc) * v
         return self.a
 
-class AugmentedCallback(ClassifierCallback):
-    def __init__(self, learner):
-        self.learner = learner
-        super().__init__(learner)
-        self.vbatcher = Batcher(self.learner.validation_set, bs=100)
-        self.classifier = Classifier(self.learner.net)
-
-    def on_train_begin(self):
-        super().on_train_begin()
+class ValidationCallback(Callback):
+    def __init__(self, trainer):
+        super().__init__(trainer)
+        self.vbatcher = Batcher(self.trainer.validation_set, bs=100)
+        self.classifier = Classifier(self.trainer.net)
         self.vlosses = []
-        self.acc = []
 
-    def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
-        super().on_train_step(step, loss, rate, mom, xs, ys, report_every)
+    def on_train_step(self, loss, rate):
+        super().on_train_step(loss, rate)
 
         # We sample the validation loss
         images, labels = next(iter(self.vbatcher))
-#        logits = self.classifier.logits(images.to("cuda"))
         logits = self.classifier.logits(images)
-        ce_loss = self.learner.loss(logits, labels.to("cuda")).data.item()
-        self.vlosses.append(ce_loss)
+        lss = self.trainer.loss(logits, labels.to("cuda")).data.item()
+        self.vlosses.append(lss)
 
     def on_train_end(self):
+        super().on_train_end()
         def plotit(losses, xoffset):
             fig = plt.figure()
             ax = fig.add_subplot(111)
@@ -132,41 +96,34 @@ class AugmentedCallback(ClassifierCallback):
         half = len(filtered) // 2
         plotit(filtered[:half], 0)
         plotit(filtered[half:], half)
-        super().on_train_end()
+
 
 class Trainer():
     def __init__(self, model, train_set, validation_set,
-                 optimizer=partial(optim.Adam, betas=(0.9, 0.99)) ):  #, loss=nn.CrossEntropyLoss):
+                 optimizer=partial(optim.Adam, betas=(0.9, 0.99)),
+                 loss=nn.CrossEntropyLoss):
+
         self.train_set = train_set
         self.validation_set = validation_set
         self.stop_requested = False
-        self.net = model.to("cuda")
-        self.loss = nn.CrossEntropyLoss()
+        self.net = model.cuda()
+        self.loss = loss()
         self.optimizer = optimizer(self.net.parameters(), lr=0.01)
-#       print("optimizer defaults:", self.optimizer.defaults)
-
-#       self.optimizer = optim.Adam(self.net.parameters(), lr=0.01, eps=1e-8, betas=(0.90, 0.99), weight_decay=0)
-#        self.optimizer = optim.SGD(self.net.parameters(), lr=0.01, momentum=0, weight_decay=0)
 
     def request_stop(self):
         self.stop_requested = True
         
-    def train(self, epochs=None, batches=None, bs=64, lr=0.03, p=0.90, report_every=100, callback=None, **kwargs):
+    def train(self, epochs=None, batches=None, bs=64, lr=0.03, p=0.90, callback=None, **kwargs):
 
         self.stop_requested = False;
         if callback is None:
-            callback = ClassifierCallback(self)
-
-        if epochs is not None:
-            print(f"epochs: {epochs}, batch size: {bs}, batches: {epochs_to_batches(self.train_set, epochs, bs)}")
-        else:
-            print(f"batch size: {bs}, batches: {batches}")
+            callback = Callback(self)
 
         batcher = Batcher(self.train_set, epochs, batches, bs, shuffle=True)
-
         callback.on_train_begin()
 
-        for i, (xs, ys) in enumerate(batcher):
+        for i, (batch, labels) in enumerate(tqdm(batcher, total=batches)):
+
             if self.stop_requested is True:
                 print(f"train: stop requested at step {i}")
                 break
@@ -176,27 +133,23 @@ class Trainer():
 
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = learning_rate
-                if 'betas' in param_group.keys():
-                    # specific to Adam
+                if 'betas' in param_group.keys(): # Adam
                     betas = param_group['betas']
                     param_group['betas'] = (momentum, betas[1])
-                elif 'momentum' in param_group.keys():
+                elif 'momentum' in param_group.keys(): # Everyone else
                     param_group['momentum'] = momentum
                 else:
                     raise KeyError("Cannot find momentum in param_group")
 
-            batch = xs.to("cuda")
-            labels = ys.to("cuda")
-
             self.net.train()
-            pred = self.net(batch)
-            ce_loss = self.loss(pred, labels)
+            pred = self.net(batch.cuda())
+            lss = self.loss(pred, labels.cuda())
             self.optimizer.zero_grad()
-            ce_loss.backward()
+            lss.backward()
             self.optimizer.step()
 
             with torch.no_grad():
-                callback.on_train_step(i, ce_loss.data.item(), learning_rate, momentum, xs, ys, report_every)
+                callback.on_train_step(lss.data.item(), learning_rate)
 
         callback.on_train_end()
         return callback
@@ -365,16 +318,12 @@ def one_cycle(trainer, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85,
         plt.grid(True)
         plt.show()
 
-        print("lr at end is", lr(batches-1))
-        print("elr at end is", elrf(batches-1))
-
     return trainer.train(epochs=None,
                          batches=batches,
                          bs=bs,
                          lr=lr,
                          p=p,
-                         callback=callback,
-                         report_every=batches//10)
+                         callback=callback)
 
 def percent(n):
     return "%.2f%%" % (100 * n)
@@ -415,16 +364,15 @@ def lr_find(trainer, bs, batches=500, start=1e-6, decades=7, steps=2500, p=0.90,
     class LR_Callback(Callback):
         def __init__(self, trainer):
             super().__init__(trainer)
-            self.losses = []
-            self.rates = []
+            self.step = 0
             self.best = math.inf
 
-        def on_train_step(self, step, loss, rate, mom, xs, ys, report_every):
-            if (loss > 4 * self.best) and (loss > 2) and (step > 50):
+        def on_train_step(self, loss, rate):
+            super().on_train_step(loss, rate)
+            self.step += 1
+            if (loss > 4 * self.best) and (loss > 2) and (self.step > 50):
                 self.trainer.request_stop()
             self.best = min(self.best, loss)
-            self.losses.append(loss)
-            self.rates.append(float(rate))
 
     recorder = LR_Callback(trainer)
 
@@ -455,30 +403,29 @@ def img_normalize(t):
 
 def create_mnist_datasets(heldout=0, randomize=False):
 
-    p = Augmentor.Pipeline()
-    p.random_distortion(1.0, 4, 4, magnitude=1)
-    p.rotate(probability=1.0, max_left_rotation=10, max_right_rotation=10)  # probably good
+    rotate_distort = Augmentor.Pipeline()
+    rotate_distort.random_distortion(1.0, 4, 4, magnitude=1)
+    rotate_distort.rotate(probability=1.0, max_left_rotation=10, max_right_rotation=10)  # probably good
 
     cropsize = 25
-
-    q = Augmentor.Pipeline()
-    q.crop_by_size(1.0, cropsize, cropsize, centre=False)
-    q.resize(1.0, 28, 28)
+    noncentered_crops = Augmentor.Pipeline()
+    noncentered_crops.crop_by_size(1.0, cropsize, cropsize, centre=False)
+    noncentered_crops.resize(1.0, 28, 28)
 
     augmented = transforms.Compose([
-                          q.torch_transform(),
-                          p.torch_transform(),
+                          noncentered_crops.torch_transform(),
+                          rotate_distort.torch_transform(),
                           transforms.ToTensor(),
                           transforms.Lambda(img_normalize)
                        ])
 
 
-    qq = Augmentor.Pipeline()
-    qq.crop_by_size(1.0, cropsize, cropsize, centre=True)
-    qq.resize(1.0, 28, 28)
+    centered_crops = Augmentor.Pipeline()
+    centered_crops.crop_by_size(1.0, cropsize, cropsize, centre=True)
+    centered_crops.resize(1.0, 28, 28)
 
     nonaugmented  = transforms.Compose([
-                          qq.torch_transform(),
+                          centered_crops.torch_transform(),
                           transforms.ToTensor(),
                           transforms.Lambda(img_normalize)
                        ])
@@ -510,8 +457,4 @@ def read_model(model, filename):
     model.load_state_dict(torch.load(filename))
     model.eval()
     return model
-
-def ReadClassifier(filename):
-    model = read_model(mnist_model(), filename)
-    return Classifier(model)
 

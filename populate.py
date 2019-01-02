@@ -21,10 +21,10 @@ def populate(npop):
     filenames = [ f"model{n+1}.pt" for n in range(npop) ]
     for filename in filenames:
         if os.path.isfile(filename) == False:
-            print(f"TRAINING MODEL: {filename}")
+            print(f"TRAINING: {filename}")
 
             trainer = Trainer(mnist_model(), tset, vset)
-            one_cycle(trainer, plot=False, **params)
+            cb = one_cycle(trainer, plot=False, **params)
 
             acc, lss = accuracy_t(Classifier(trainer.net), ds=testset, lossftn=nn.CrossEntropyLoss())
             print(f"TEST: loss = {lss:.3g}, accuracy = {percent(acc)}")

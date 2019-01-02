@@ -16,6 +16,7 @@ def epochs_to_batches(ds, epochs, bs):
     return epochs * (len(ds) // bs)
 
 def Batcher(ds, epochs=None, batches=None, bs=1, shuffle=True):
+    "Iterator interface to dataset."
 
     def by_epoch(ds, epochs=1, bs=1, shuffle=True):
         for epoch in range(epochs):
@@ -38,6 +39,7 @@ def Batcher(ds, epochs=None, batches=None, bs=1, shuffle=True):
         return by_batch(ds, batches, bs, shuffle)
 
 class Callback():
+    "Recorder for Trainer class."
     def __init__(self, trainer):
         self.trainer = trainer
 
@@ -85,6 +87,7 @@ class Callback():
         pass
 
 class filter():
+    "Exponential moving average filter."
     def __init__(self, tc=0.9):
         self.a = None
         self.tc = tc
@@ -97,6 +100,7 @@ class filter():
         return self.a
 
 class ValidationCallback(Callback):
+    "Callback for sampling validation loss during training."
     def __init__(self, trainer):
         super().__init__(trainer)
         self.vbatcher = Batcher(self.trainer.validation_set, bs=100)
@@ -121,6 +125,7 @@ class ValidationCallback(Callback):
 
 
 class Trainer():
+    "Trains a model using datasets, optimizer, and loss."
     def __init__(self, model, train_set, validation_set,
                  optimizer=partial(optim.Adam, betas=(0.9, 0.99)),
                  loss=nn.CrossEntropyLoss):
@@ -177,6 +182,7 @@ class Trainer():
         return callback
 
 class Classifier():
+    "Instantiates a model as a classifier."
     def __init__(self, model, device="cuda"):
         self.device = device
         self.model = model.to(device)
@@ -193,6 +199,7 @@ class Classifier():
         return F.softmax(self.logits(x), dim=1)
 
 class VotingSoftmaxClassifier():
+    "Combines a set of classifiers into a committee."
     def __init__(self, classifiers):
         self.classifiers = classifiers
 
@@ -208,6 +215,7 @@ class VotingSoftmaxClassifier():
         return r / len(self.classifiers)
 
 def show_mistakes(classifier, ds, dds=None):
+    "Displays mistakes made by a classifier on labeled dataset."
     if dds is None: dds = ds
     mistakes = [m for m in misclassified(classifier, ds)]
     if len(mistakes) == 0:
@@ -218,6 +226,7 @@ def show_mistakes(classifier, ds, dds=None):
 
 
 def misclassified(classifier, ds, bs=100):
+    "Iterates through mistakes made by classifier."
     batcher = Batcher(ds, epochs=1, bs=bs, shuffle=False)
     for n, (batch, labels) in enumerate(batcher):
         pred = classifier(batch).cpu()
@@ -226,6 +235,7 @@ def misclassified(classifier, ds, bs=100):
             yield (int(i) + n*bs, int(pred[i]) )
 
 def accuracy_t(classifier, ds, bs=100, lossftn=None):
+    "Computes classifer accuracy and optionally loss on a dataset."
     batcher = Batcher(ds, epochs=1, bs=bs)
     correct = tloss = 0
     for n, (batch, labels) in enumerate(batcher, 1):
@@ -237,6 +247,7 @@ def accuracy_t(classifier, ds, bs=100, lossftn=None):
     accuracy = correct / (n * bs)
     loss = tloss / n
     return accuracy if lossftn is None else (accuracy, loss)
+
 
 class Residual(nn.Module):
     def __init__(self, d):
@@ -253,6 +264,7 @@ class Flatten(nn.Module):
         return x.view(x.size()[0], -1)
 
 def mnist_model():
+    "Returns initialized but untrained model for MNIST classifier."
     return nn.Sequential(
                nn.Conv2d(in_channels=1, out_channels=128, kernel_size=5, padding=2),
                nn.ReLU(),
@@ -297,19 +309,9 @@ def cos_interpolator(a, b, steps):
 def exp_interpolator(a, b, steps):
     return lambda x : a*(b/a)**(x/steps)   
 
-def elr(lr, p):
-    return lambda x: lr(x) / (1-p(x))
-
-def to_p(elr, lr):
-    return lambda x: 1 - (lr(x) / elr(x))
-
-def to_lr(elr, p):
-    return lambda x: elr(x) * (1-p(x))
-
-
 def one_cycle(trainer, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85, 
               lrmin2=None, pmax2=None, callback=None, **kwargs):
-
+    "Trains with cyclic learning rate & momentum."
     def schedule(batches, left, middle, right=None):
         if right is None: right=left
         n = int(batches * 0.3)
@@ -334,6 +336,7 @@ def percent(n):
     return "%.2f%%" % (100 * n)
 
 def show_image(v, title=None):
+    "Displays numpy or torch array as image."
     if type(v) is torch.Tensor:
         v = v.numpy()
     v = v.reshape([28,28])
@@ -344,6 +347,7 @@ def show_image(v, title=None):
     img = plt.imshow(v, cmap="Greys", )
 
 def plot_images(batch, title=None, labels=None):
+    "Displays batch of images in a grid."
     if type(batch) is torch.Tensor:
         batch = batch.cpu().detach().numpy()
     n = batch.shape[-1]
@@ -366,7 +370,10 @@ def plot_images(batch, title=None, labels=None):
     plt.show()
 
 def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
+    "Sweep learning rate for model and display loss."
+
     class LR_Callback(Callback):
+        "Callback for implementing lr_find()"
         def __init__(self, trainer):
             super().__init__(trainer)
             self.step = 0
@@ -454,12 +461,14 @@ def create_mnist_datasets(heldout=0, randomize=False):
     return (train_set, valid_set, test_set)
 
 def save_model(model, filename):
+    "Write the parameters of a model to a file."
     sd = model.state_dict()
     #for param_tensor in sd:
     #    print(param_tensor, "\t", sd[param_tensor].size())
     torch.save(sd, filename)
 
 def read_model(model, filename):
+    "Read model parameters from file."
     model.load_state_dict(torch.load(filename))
     model.eval()
     return model

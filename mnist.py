@@ -42,12 +42,44 @@ class Callback():
         self.trainer = trainer
 
     def on_train_begin(self):
-        self.losses = []
-        self.rates =  []
+        self.tlosses = []
+        self.lrs =  []
+        self.moms = []
 
-    def on_train_step(self, loss, rate):
-        self.losses.append(loss)
-        self.rates.append(rate)
+    def on_train_step(self, loss, lr, mom):
+        self.tlosses.append(loss)
+        self.lrs.append(lr)
+        self.moms.append(mom)
+
+    def plotit(self, vals, xlabel, ylabel, ltrim=0):
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        ax.plot(ltrim + np.arange(len(vals)), vals)
+        ax.grid(True)
+        ax.set_ylabel(ylabel)
+        ax.set_xlabel(xlabel)
+
+    def plot_lr(self):
+        "Plot learning rate schedule"
+        self.plotit(self.lrs, "batch", "Learning Rate")
+
+    def plot_mom(self):
+        "Plot momentum schedule"
+        self.plotit(self.moms, "batch", "Momentum")
+
+    def plot_elr(self):
+        "Plot effective learning rate: lr/(1-mom)"
+        lr = np.array(self.lrs)
+        mom = np.array(self.moms)
+        elr = lr / (1 - mom)
+        self.plotit(elr, "batch", "Effective Learning Rate")
+
+    def plot_tloss(self, ltrim=0, rtrim=0, tc=0.99):
+        "Plot sampled, filtered, and trimmed training loss."
+        vals = self.tlosses[ltrim:rtrim] if rtrim > 0 else self.tlosses[ltrim:]
+        f = filter(tc)
+        filtered = [f(v) for v in vals]
+        self.plotit(filtered, "batch", "Training Loss", ltrim)
 
     def on_train_end(self):
         pass
@@ -71,31 +103,21 @@ class ValidationCallback(Callback):
         self.classifier = Classifier(self.trainer.net)
         self.vlosses = []
 
-    def on_train_step(self, loss, rate):
-        super().on_train_step(loss, rate)
+    def on_train_step(self, loss, lr, mom):
+        super().on_train_step(loss, lr, mom)
 
-        # We sample the validation loss
+        # We sample the validation loss.
         images, labels = next(iter(self.vbatcher))
         logits = self.classifier.logits(images)
         lss = self.trainer.loss(logits, labels.to("cuda")).data.item()
         self.vlosses.append(lss)
 
-    def on_train_end(self):
-        super().on_train_end()
-        def plotit(losses, xoffset):
-            fig = plt.figure()
-            ax = fig.add_subplot(111)
-            ax.plot(xoffset + np.arange(len(losses)), losses)
-            ax.grid(True)
-            ax.set_ylabel("validation loss")
-            ax.set_xlabel("step")
-            plt.show()
-
-        f = filter(0.99)
-        filtered = [f(vloss) for vloss in self.vlosses]
-        half = len(filtered) // 2
-        plotit(filtered[:half], 0)
-        plotit(filtered[half:], half)
+    def plot_vloss(self, ltrim=0, rtrim=0, tc=0.99):
+        "Plot sampled, filtered, and trimmed validation loss."
+        vals = self.vlosses[ltrim:rtrim] if rtrim > 0 else self.vlosses[ltrim:]
+        f = filter(tc)
+        filtered = [f(v) for v in vals]
+        self.plotit(filtered, "batch", "Training Loss", ltrim)
 
 
 class Trainer():
@@ -149,7 +171,7 @@ class Trainer():
             self.optimizer.step()
 
             with torch.no_grad():
-                callback.on_train_step(lss.data.item(), learning_rate)
+                callback.on_train_step(lss.data.item(), learning_rate, momentum)
 
         callback.on_train_end()
         return callback
@@ -188,9 +210,12 @@ class VotingSoftmaxClassifier():
 def show_mistakes(classifier, ds, dds=None):
     if dds is None: dds = ds
     mistakes = [m for m in misclassified(classifier, ds)]
+    if len(mistakes) == 0:
+        print("No mistakes to show!")
+        return
     labels = [f"{ds[index][1]} not {pred}" for (index, pred) in mistakes ]
     plot_images(torch.cat([dds[index][0] for (index, _)  in mistakes]), labels=labels)
-    plt.show()
+
 
 def misclassified(classifier, ds, bs=100):
     batcher = Batcher(ds, epochs=1, bs=bs, shuffle=False)
@@ -281,17 +306,9 @@ def to_p(elr, lr):
 def to_lr(elr, p):
     return lambda x: elr(x) * (1-p(x))
 
-def plotfunc(f, steps, label=None):
-    x = [f(i) for i in range(steps)]
-    plt.plot(x)
-    if label is not None:
-        plt.ylabel(label)
-        plt.xlabel("batch")
-    plt.grid(True)
-    plt.show()
 
 def one_cycle(trainer, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85, 
-              lrmin2=None, pmax2=None, callback=None, plot=False, **kwargs):
+              lrmin2=None, pmax2=None, callback=None, **kwargs):
 
     def schedule(batches, left, middle, right=None):
         if right is None: right=left
@@ -305,18 +322,6 @@ def one_cycle(trainer, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85,
 
     p=schedule(batches, left=pmax, middle=pmin, right=pmax2)
     lr=schedule(batches, left=lrmin, middle=lrmax, right=lrmin2)
-
-    if plot:
-        plotfunc(lr, batches, "LR")
-        plotfunc(p, batches, "P")
-        elrf = elr(lr, p)
-
-        plotfunc(elrf, batches, "ELR")
-        cumsum = np.cumsum([elrf(i) for i in range(batches)])
-        plt.plot(cumsum) 
-        plt.ylabel("Sum ELR")
-        plt.grid(True)
-        plt.show()
 
     return trainer.train(epochs=None,
                          batches=batches,
@@ -358,17 +363,17 @@ def plot_images(batch, title=None, labels=None):
         plt.imshow(batch[i,:,:], cmap="Greys")
         if labels is not None:
             plt.annotate(labels[i], xy=(5,0))
+    plt.show()
 
-
-def lr_find(trainer, bs, batches=500, start=1e-6, decades=7, steps=2500, p=0.90, **kwargs):
+def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     class LR_Callback(Callback):
         def __init__(self, trainer):
             super().__init__(trainer)
             self.step = 0
             self.best = math.inf
 
-        def on_train_step(self, loss, rate):
-            super().on_train_step(loss, rate)
+        def on_train_step(self, loss, lr, mom):
+            super().on_train_step(loss, lr, mom)
             self.step += 1
             if (loss > 4 * self.best) and (loss > 2) and (self.step > 50):
                 self.trainer.request_stop()
@@ -380,17 +385,18 @@ def lr_find(trainer, bs, batches=500, start=1e-6, decades=7, steps=2500, p=0.90,
     trainer.train(epochs=None, batches=steps, bs=bs, lr=lr, p=p, callback=recorder, **kwargs)
 
     def plotit(rates, losses, xlabel):
-        plt.semilogx(rates, losses)
-        plt.xlabel(xlabel)
-        plt.ylabel("Loss")
-        plt.grid(True)
-        plt.show()
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        ax.semilogx(rates, losses)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("Loss")
+        ax.grid(True)
 
-    plotit(recorder.rates, recorder.losses, "Learning Rate")
+    plotit(recorder.lrs, recorder.tlosses, "Learning Rate")
 
-    rates = np.array(recorder.rates)
+    rates = np.array(recorder.lrs)
     eff_rates = rates / (1 - p)
-    plotit(eff_rates, recorder.losses, "Eff. Learning Rate")
+    plotit(eff_rates, recorder.tlosses, "Eff. Learning Rate")
 
     return recorder
 

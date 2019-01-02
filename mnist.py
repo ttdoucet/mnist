@@ -1,3 +1,5 @@
+# Written by Todd Doucet.
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -463,8 +465,6 @@ def create_mnist_datasets(heldout=0, randomize=False):
 def save_model(model, filename):
     "Write the parameters of a model to a file."
     sd = model.state_dict()
-    #for param_tensor in sd:
-    #    print(param_tensor, "\t", sd[param_tensor].size())
     torch.save(sd, filename)
 
 def read_model(model, filename):

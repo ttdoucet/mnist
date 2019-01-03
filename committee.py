@@ -8,16 +8,15 @@ def populate(npop):
 
     # The one-cycle training schedule to use.
     lr_eff = 0.001
-    pmax = 0.95
-    pmin = 0.60
-    pmax2 = 0.60
+    p_max = 0.95
+    p_min = 0.60
     params = {'epochs': 10, 'bs': 100,
-              'lrmin': (1.0 - pmax) * lr_eff,
-              'lrmax': (1.0 - pmin) * lr_eff,
-              'lrmin2': (1.0 - pmax2) * (lr_eff / 25),
-              'pmax' : pmax,
-              'pmin' : pmin,
-              'pmax2' : pmax2}
+              'lr_start': (1.0 - p_max) * lr_eff,
+              'lr_middle': (1.0 - p_min) * lr_eff,
+              'lr_end': (1.0 - p_min) * (lr_eff / 25),
+              'p_start' : p_max,
+              'p_middle' : p_min,
+              'p_end' : p_min}
 
     # Our training set, with augmentation.
     tset, _, testset = create_mnist_datasets(heldout=0, randomize=False)

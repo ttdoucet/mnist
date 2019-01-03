@@ -123,12 +123,12 @@ class ValidationCallback(Callback):
         vals = self.vlosses[ltrim:rtrim] if rtrim > 0 else self.vlosses[ltrim:]
         f = filter(tc)
         filtered = [f(v) for v in vals]
-        self.plotit(filtered, "batch", "Training Loss", ltrim)
+        self.plotit(filtered, "batch", "Validation Loss", ltrim)
 
 
 class Trainer():
     "Trains a model using datasets, optimizer, and loss."
-    def __init__(self, model, train_set, validation_set,
+    def __init__(self, model, train_set, validation_set=None,
                  optimizer=partial(optim.Adam, betas=(0.9, 0.99)),
                  loss=nn.CrossEntropyLoss):
 
@@ -272,7 +272,7 @@ class Flatten(nn.Module):
         return x.view(x.size()[0], -1)
 
 def mnist_model():
-    "Returns initialized but untrained model for MNIST classifier."
+    "Returns an initialized but untrained model for MNIST."
     return nn.Sequential(
                nn.Conv2d(in_channels=1, out_channels=128, kernel_size=5, padding=2),
                nn.ReLU(),
@@ -317,21 +317,24 @@ def cos_interpolator(a, b, steps):
 def exp_interpolator(a, b, steps):
     return lambda x : a*(b/a)**(x/steps)   
 
-def one_cycle(trainer, epochs, lrmin, lrmax, bs, pmax=0.95, pmin=0.85, 
-              lrmin2=None, pmax2=None, callback=None, **kwargs):
+def one_cycle(trainer, epochs, bs,
+              lr_start, lr_middle, lr_end=None,
+              p_start=0.95, p_middle=0.85, p_end=None,
+              callback=None, **kwargs):
     "Trains with cyclic learning rate & momentum."
-    def schedule(batches, left, middle, right=None):
-        if right is None: right=left
+
+    def schedule(batches, start, middle, right=None):
+        if right is None: right=start
         n = int(batches * 0.3)
 
-        f = cos_interpolator(left, middle, n)
+        f = cos_interpolator(start, middle, n)
         g = cos_interpolator(middle, right, batches - n)
         return fconcat(f, g, n)
 
     batches = epochs_to_batches(trainer.train_set, epochs, bs)
 
-    p=schedule(batches, left=pmax, middle=pmin, right=pmax2)
-    lr=schedule(batches, left=lrmin, middle=lrmax, right=lrmin2)
+    p=schedule(batches, p_start, p_middle, p_end)
+    lr=schedule(batches, lr_start, lr_middle, lr_end)
 
     return trainer.train(epochs=None,
                          batches=batches,

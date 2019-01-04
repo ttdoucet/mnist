@@ -143,7 +143,7 @@ class Trainer():
         "A Callback can request that training stop."
         self.stop_requested = True
         
-    def train(self, epochs=None, batches=None, bs=64, lr=0.03, p=0.90, callback=None, **kwargs):
+    def train(self, epochs=None, batches=None, bs=64, lr=0.03, p=0.90, callback=None, silent=False, **kwargs):
         "The training loop--calls out to Callback at appropriate points."
 
         self.stop_requested = False;
@@ -153,7 +153,8 @@ class Trainer():
         batcher = Batcher(self.train_set, epochs, batches, bs, shuffle=True)
         callback.on_train_begin()
 
-        for i, (batch, labels) in enumerate(tqdm(batcher, total=batches)):
+        statusbar = tqdm if not silent else lambda x, **args: x
+        for i, (batch, labels) in enumerate(statusbar(batcher, total=batches)):
 
             if self.stop_requested is True:
                 print(f"train: stop requested at step {i}")
@@ -323,12 +324,12 @@ def one_cycle(trainer, epochs, bs,
               callback=None, **kwargs):
     "Trains with cyclic learning rate & momentum."
 
-    def schedule(batches, start, middle, right=None):
-        if right is None: right=start
+    def schedule(batches, start, middle, end=None):
+        if end is None: end=start
         n = int(batches * 0.3)
 
         f = cos_interpolator(start, middle, n)
-        g = cos_interpolator(middle, right, batches - n)
+        g = cos_interpolator(middle, end, batches - n)
         return fconcat(f, g, n)
 
     batches = epochs_to_batches(trainer.train_set, epochs, bs)
@@ -350,7 +351,7 @@ def show_image(v, title=None):
     "Displays numpy or torch array as image."
     if type(v) is torch.Tensor:
         v = v.numpy()
-    v = v.reshape([28,28])
+    v = np.squeeze(v, axis=0)
     plt.figure()
     plt.title(title)
     plt.xticks([])
@@ -400,7 +401,7 @@ def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     recorder = LR_Callback(trainer)
 
     lr = exp_interpolator(start, start*10**decades, steps)
-    trainer.train(epochs=None, batches=steps, bs=bs, lr=lr, p=p, callback=recorder, **kwargs)
+    trainer.train(epochs=None, batches=steps, bs=bs, lr=lr, p=p, callback=recorder, silent=True, **kwargs)
 
     def plotit(rates, losses, xlabel):
         fig = plt.figure()

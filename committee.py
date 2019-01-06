@@ -39,7 +39,7 @@ def populate(npop):
             one_cycle(trainer, **params)
 
             # After training, see how this individual net does on the test set.
-            acc, lss = accuracy(Classifier(trainer.net), ds=testset, lossftn=nn.CrossEntropyLoss())
+            acc, lss = accuracy(Classifier(trainer.net), ds=testset, include_loss=True)
             print(f"TEST: loss = {lss:.3g}, accuracy = {percent(acc)}")
 
             # Write the model to disk.

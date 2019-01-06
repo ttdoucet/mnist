@@ -80,7 +80,7 @@ class Callback():
 
     def plot_tloss(self, ltrim=0, rtrim=0, tc=0.99):
         "Plot sampled, filtered, and trimmed training loss."
-        vals = self.tlosses[ltrim:rtrim] if rtrim > 0 else self.tlosses[ltrim:]
+        vals = self.tlosses[ltrim:-rtrim] if rtrim > 0 else self.tlosses[ltrim:]
         f = filter(tc)
         filtered = [f(v) for v in vals]
         self.plotit(filtered, "batch", "Training Loss", ltrim)
@@ -120,7 +120,7 @@ class ValidationCallback(Callback):
 
     def plot_vloss(self, ltrim=0, rtrim=0, tc=0.99):
         "Plot sampled, filtered, and trimmed validation loss."
-        vals = self.vlosses[ltrim:rtrim] if rtrim > 0 else self.vlosses[ltrim:]
+        vals = self.vlosses[ltrim:-rtrim] if rtrim > 0 else self.vlosses[ltrim:]
         f = filter(tc)
         filtered = [f(v) for v in vals]
         self.plotit(filtered, "batch", "Validation Loss", ltrim)
@@ -243,20 +243,22 @@ def misclassified(classifier, ds, bs=100):
         for i in mistakes:
             yield (int(i) + n*bs, int(pred[i]) )
 
-def accuracy(classifier, ds, bs=100, lossftn=None):
+def accuracy(classifier, ds, bs=100, include_loss=False):
     "Computes classifer accuracy and optionally loss on a dataset."
     batcher = Batcher(ds, epochs=1, bs=bs)
     correct = tloss = 0
+
+    lossftn = nn.NLLLoss()
     for n, (batch, labels) in enumerate(batcher, 1):
         predictions = classifier(batch).cpu()
         correct += (predictions == labels).sum().item()
-        if lossftn is not None:
-           logits = classifier.logits(batch)
-           tloss += lossftn(logits, labels.cuda()).item()
+        if include_loss:
+           logsoftmax = torch.log(classifier.softmax(batch))
+           tloss += lossftn(logsoftmax, labels.cuda()).item()
+
     accuracy = correct / (n * bs)
     loss = tloss / n
-    return accuracy if lossftn is None else (accuracy, loss)
-
+    return (accuracy, loss) if include_loss else accuracy
 
 class Residual(nn.Module):
     def __init__(self, d):
@@ -352,11 +354,12 @@ def show_image(v, title=None):
     if type(v) is torch.Tensor:
         v = v.numpy()
     v = np.squeeze(v, axis=0)
-    plt.figure()
-    plt.title(title)
-    plt.xticks([])
-    plt.yticks([])
-    img = plt.imshow(v, cmap="Greys", )
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.set_title(title)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.imshow(v, cmap="Greys", )
 
 def plot_images(batch, title=None, labels=None):
     "Displays batch of images in a grid."
@@ -372,14 +375,13 @@ def plot_images(batch, title=None, labels=None):
     fig = plt.figure(figsize=(10,10))
     fig.canvas.set_window_title(title)
     for i in range(n):
-        plt.subplot(s, s, i+1)
-        plt.xticks([])
-        plt.yticks([])
-        plt.axis('off')
-        plt.imshow(batch[i,:,:], cmap="Greys")
+        ax = fig.add_subplot(s, s, i+1)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.axis('off')
+        ax.imshow(batch[i,:,:], cmap="Greys")
         if labels is not None:
-            plt.annotate(labels[i], xy=(5,0))
-    plt.show()
+            ax.annotate(labels[i], xy=(5,0))
 
 def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     "Sweep learning rate for model and display loss."

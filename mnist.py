@@ -175,6 +175,7 @@ class Trainer():
 
             self.net.train()
             pred = self.net(batch.cuda())
+
             lss = self.loss(pred, labels.cuda())
             self.optimizer.zero_grad()
             lss.backward()
@@ -428,6 +429,7 @@ def img_normalize(t):
     t = t / t.std(dim=1, keepdim=True, unbiased=False)
     return t.view(c, x, y)
 
+
 def create_mnist_datasets(heldout=0, randomize=False):
 
     rotate_distort = Augmentor.Pipeline()
@@ -457,6 +459,7 @@ def create_mnist_datasets(heldout=0, randomize=False):
                           transforms.Lambda(img_normalize)
                        ])
 
+
     train_au = datasets.MNIST('./data', train=True,  download=True, transform=augmented)
     train_na = datasets.MNIST('./data', train=True,  download=True, transform=nonaugmented)
     test_set = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
@@ -484,4 +487,23 @@ def read_model(model, filename):
     model.load_state_dict(torch.load(filename))
     model.eval()
     return model
+
+####
+
+
+# def to_onehot(target, nlabels):
+#     return torch.eye(nlabels)[target]
+
+
+class FullCrossEntropyLoss(nn.Module):
+    "Cross-entropy loss which takes either class labels or softmax dist. as target."
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input, target):
+        if target.dim() == 1:
+            nlabels = input.size()[-1]
+            one_hot = torch.eye(nlabels)[target].to(input.device)
+            target = one_hot
+        return  -(F.log_softmax(input, 1) * target).sum()
 

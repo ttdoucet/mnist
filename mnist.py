@@ -200,7 +200,7 @@ class Classifier():
 
     def __call__(self, x):
         "Classifies a batch into predicted labels."
-        return torch.argmax(self.softmax(x), 1)
+        return torch.argmax(self.softmax(x), dim=1)
 
     def softmax(self, x):
         "The probability distribution underlying the prediction."
@@ -491,19 +491,17 @@ def read_model(model, filename):
 ####
 
 
-# def to_onehot(target, nlabels):
-#     return torch.eye(nlabels)[target]
-
+def onehot(target, nlabels):
+    return torch.eye(nlabels)[target]
 
 class FullCrossEntropyLoss(nn.Module):
-    "Cross-entropy loss which takes either class labels or softmax dist. as target."
+    "Cross-entropy loss which takes either class labels or prob. dist. as target."
     def __init__(self):
         super().__init__()
 
     def forward(self, input, target):
         if target.dim() == 1:
-            nlabels = input.size()[-1]
-            one_hot = torch.eye(nlabels)[target].to(input.device)
-            target = one_hot
-        return  -(F.log_softmax(input, 1) * target).sum()
+            nlabels = input.shape[-1]
+            target = onehot(target, nlabels).to(input.device)
+        return  -(F.log_softmax(input, dim=1) * target).sum()
 

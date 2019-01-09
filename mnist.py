@@ -169,7 +169,6 @@ class Trainer():
         for i, (batch, labels) in enumerate(batcher):
 
             if self.stop_requested is True:
-                # print(f"train: stop requested at step {i}")
                 break
 
             learning_rate=lr(i) if callable(lr) else lr
@@ -343,7 +342,8 @@ def exp_interpolator(a, b, steps):
 def one_cycle(trainer, epochs, bs,
               lr_start, lr_middle, lr_end=None,
               p_start=0.95, p_middle=0.85, p_end=None,
-              callback=None, yielder=False, **kwargs):
+              batches=None, callback=None, yielder=False,
+              **kwargs):
     "Trains with cyclic learning rate & momentum."
 
     def schedule(batches, start, middle, end=None):
@@ -354,18 +354,15 @@ def one_cycle(trainer, epochs, bs,
         g = cos_interpolator(middle, end, batches - n)
         return fconcat(f, g, n)
 
-    batches = epochs_to_batches(trainer.train_set, epochs, bs)
+    if batches is None:
+        batches = epochs_to_batches(trainer.train_set, epochs, bs)
 
     p=schedule(batches, p_start, p_middle, p_end)
     lr=schedule(batches, lr_start, lr_middle, lr_end)
 
-    f = trainer.train_steps if yielder else trainer.train
-    return f(epochs=None,
-             batches=batches,
-             bs=bs,
-             lr=lr,
-             p=p,
-             callback=callback)
+    train = trainer.train_steps if yielder else trainer.train
+    return train(epochs=None, batches=batches,
+                 bs=bs, lr=lr, p=p, callback=callback)
 
 
 def percent(n):

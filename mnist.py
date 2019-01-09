@@ -190,20 +190,17 @@ class Trainer():
 
         callback.on_train_end()
 
-    # Actually, it looks like it just uses the batches parameter for
-    # the statusbar and is probably broken if epochs is specified
-    # instead.  It's all overfit to one_cycle() probably.
-    #
-    def train(self, batches=None, silent=False, **kwargs):
+    def train(self, epochs=None, batches=None, bs=None,  silent=False, **kwargs):
         "The training loop--calls out to Callback at appropriate points"
+
         statusbar = tqdm if not silent else lambda x, **args: x
+        if batches is None:
+            batches = epochs_to_batches(self.train_set, epochs, bs)
+
         steps = self.train_steps(**dict(kwargs, batches=batches))
         for step in statusbar(steps, total=batches):
             pass
         return step
-
-
-
 
 class Classifier():
     "Instantiates a model as a classifier."

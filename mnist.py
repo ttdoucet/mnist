@@ -62,6 +62,7 @@ class Callback():
         ax.grid(True)
         ax.set_ylabel(ylabel)
         ax.set_xlabel(xlabel)
+        plt.show()
 
     def plot_lr(self):
         "Plot learning rate schedule"
@@ -80,10 +81,10 @@ class Callback():
 
     def plot_tloss(self, ltrim=0, rtrim=0, tc=0.99):
         "Plot sampled, filtered, and trimmed training loss."
-        vals = self.tlosses[ltrim:-rtrim] if rtrim > 0 else self.tlosses[ltrim:]
         f = filter(tc)
-        filtered = [f(v) for v in vals]
-        self.plotit(filtered, "batch", "Training Loss", ltrim)
+        filtered = [f(v) for v in self.tlosses]
+        vals = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
+        self.plotit(vals, "batch", "Training Loss", ltrim)
 
     def on_train_end(self):
         pass
@@ -120,11 +121,10 @@ class ValidationCallback(Callback):
 
     def plot_vloss(self, ltrim=0, rtrim=0, tc=0.99):
         "Plot sampled, filtered, and trimmed validation loss."
-        vals = self.vlosses[ltrim:-rtrim] if rtrim > 0 else self.vlosses[ltrim:]
         f = filter(tc)
-        filtered = [f(v) for v in vals]
-        self.plotit(filtered, "batch", "Validation Loss", ltrim)
-
+        filtered = [f(v) for v in self.vlosses]
+        vals = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
+        self.plotit(vals, "batch", "Validation Loss", ltrim)
 
 class Trainer():
     "Trains a model using datasets, optimizer, and loss."
@@ -143,8 +143,20 @@ class Trainer():
         "A Callback can request that training stop."
         self.stop_requested = True
         
-    def train(self, epochs=None, batches=None, bs=64, lr=0.03, p=0.90, callback=None, silent=False, **kwargs):
-        "The training loop--calls out to Callback at appropriate points."
+    def set_hyperparameters(self, lr, p):
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+            if 'betas' in param_group.keys(): # Adam
+                betas = param_group['betas']
+                param_group['betas'] = (p, betas[1])
+            elif 'momentum' in param_group.keys(): # Everyone else
+                param_group['momentum'] = p
+            else:
+                raise KeyError("Cannot find momentum in param_group")
+
+    def train_steps(self, epochs=None, batches=None, bs=64, lr=0.03, p=0.90, callback=None,
+                    silent=False, **kwargs):
+        "Iterator interface to the training loop."
 
         self.stop_requested = False;
         if callback is None:
@@ -153,8 +165,7 @@ class Trainer():
         batcher = Batcher(self.train_set, epochs, batches, bs, shuffle=True)
         callback.on_train_begin()
 
-        statusbar = tqdm if not silent else lambda x, **args: x
-        for i, (batch, labels) in enumerate(statusbar(batcher, total=batches)):
+        for i, (batch, labels) in enumerate(batcher):
 
             if self.stop_requested is True:
                 print(f"train: stop requested at step {i}")
@@ -162,30 +173,37 @@ class Trainer():
 
             learning_rate=lr(i) if callable(lr) else lr
             momentum = p(i) if callable(p) else p
-
-            for param_group in self.optimizer.param_groups:
-                param_group['lr'] = learning_rate
-                if 'betas' in param_group.keys(): # Adam
-                    betas = param_group['betas']
-                    param_group['betas'] = (momentum, betas[1])
-                elif 'momentum' in param_group.keys(): # Everyone else
-                    param_group['momentum'] = momentum
-                else:
-                    raise KeyError("Cannot find momentum in param_group")
+            self.set_hyperparameters(learning_rate, momentum)
 
             self.net.train()
             pred = self.net(batch.cuda())
 
-            lss = self.loss(pred, labels.cuda())
+            loss = self.loss(pred, labels.cuda())
             self.optimizer.zero_grad()
-            lss.backward()
+            loss.backward()
             self.optimizer.step()
 
             with torch.no_grad():
-                callback.on_train_step(lss.data.item(), learning_rate, momentum)
+                callback.on_train_step(loss.data.item(), learning_rate, momentum)
+
+            yield(callback)
 
         callback.on_train_end()
-        return callback
+
+    # Actually, it looks like it just uses the batches parameter for
+    # the statusbar and is probably broken if epochs is specified
+    # instead.  It's all overfit to one_cycle() probably.
+    #
+    def train(self, batches=None, silent=False, **kwargs):
+        "The training loop--calls out to Callback at appropriate points"
+        statusbar = tqdm if not silent else lambda x, **args: x
+        steps = self.train_steps(**dict(kwargs, batches=batches))
+        for step in statusbar(steps, total=batches):
+            pass
+        return step
+
+
+
 
 class Classifier():
     "Instantiates a model as a classifier."
@@ -215,7 +233,7 @@ class VotingClassifier():
         "Committee classification of batch."
         with torch.no_grad():
             s = self.softmax(x)
-            return torch.argmax(s, 1)
+            return torch.argmax(s, dim=1)
 
     def softmax(self, x):
         "Combined probability distribution from committee."
@@ -324,7 +342,7 @@ def exp_interpolator(a, b, steps):
 def one_cycle(trainer, epochs, bs,
               lr_start, lr_middle, lr_end=None,
               p_start=0.95, p_middle=0.85, p_end=None,
-              callback=None, **kwargs):
+              callback=None, yielder=False, **kwargs):
     "Trains with cyclic learning rate & momentum."
 
     def schedule(batches, start, middle, end=None):
@@ -340,12 +358,14 @@ def one_cycle(trainer, epochs, bs,
     p=schedule(batches, p_start, p_middle, p_end)
     lr=schedule(batches, lr_start, lr_middle, lr_end)
 
-    return trainer.train(epochs=None,
-                         batches=batches,
-                         bs=bs,
-                         lr=lr,
-                         p=p,
-                         callback=callback)
+    f = trainer.train_steps if yielder else trainer.train
+    return f(epochs=None,
+             batches=batches,
+             bs=bs,
+             lr=lr,
+             p=p,
+             callback=callback)
+
 
 def percent(n):
     return "%.2f%%" % (100 * n)
@@ -413,6 +433,7 @@ def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
         ax.set_xlabel(xlabel)
         ax.set_ylabel("Loss")
         ax.grid(True)
+        plt.show()
 
     plotit(recorder.lrs, recorder.tlosses, "Learning Rate")
 
@@ -503,5 +524,5 @@ class FullCrossEntropyLoss(nn.Module):
         if target.dim() == 1:
             nlabels = input.shape[-1]
             target = onehot(target, nlabels).to(input.device)
-        return  -(F.log_softmax(input, dim=1) * target).sum()
+        return  -(F.log_softmax(input, dim=1) * target).mean()
 

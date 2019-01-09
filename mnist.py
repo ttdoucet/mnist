@@ -154,8 +154,9 @@ class Trainer():
             else:
                 raise KeyError("Cannot find momentum in param_group")
 
-    def train_steps(self, epochs=None, batches=None, bs=64, lr=0.03, p=0.90, callback=None,
-                    silent=False, **kwargs):
+    def train_steps(self, epochs=None, batches=None, bs=64,
+                    lr=0.03, p=0.90, callback=None,
+                    authority=None, silent=False, **kwargs):
         "Iterator interface to the training loop."
 
         self.stop_requested = False;
@@ -168,12 +169,15 @@ class Trainer():
         for i, (batch, labels) in enumerate(batcher):
 
             if self.stop_requested is True:
-                print(f"train: stop requested at step {i}")
+                # print(f"train: stop requested at step {i}")
                 break
 
             learning_rate=lr(i) if callable(lr) else lr
             momentum = p(i) if callable(p) else p
             self.set_hyperparameters(learning_rate, momentum)
+
+            if authority is not None:
+                labels = authority(batch)
 
             self.net.train()
             pred = self.net(batch.cuda())
@@ -404,24 +408,15 @@ def plot_images(batch, title=None, labels=None):
 def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     "Sweep learning rate for model and display loss."
 
-    class LR_Callback(Callback):
-        "Callback for implementing lr_find()"
-        def __init__(self, trainer):
-            super().__init__(trainer)
-            self.step = 0
-            self.best = math.inf
-
-        def on_train_step(self, loss, lr, mom):
-            super().on_train_step(loss, lr, mom)
-            self.step += 1
-            if (loss > 4 * self.best) and (loss > 2) and (self.step > 50):
-                self.trainer.request_stop()
-            self.best = min(self.best, loss)
-
-    recorder = LR_Callback(trainer)
-
     lr = exp_interpolator(start, start*10**decades, steps)
-    trainer.train(epochs=None, batches=steps, bs=bs, lr=lr, p=p, callback=recorder, silent=True, **kwargs)
+    steps = trainer.train_steps(epochs=None, batches=steps, bs=bs, lr=lr, p=p, silent=True, **kwargs)
+    best = math.inf
+    for i, step in enumerate(steps):
+        loss = step.tlosses[-1]
+        if (loss > 4 * best) and (loss > 2) and (i > 50):
+            print(f"stopping at step {i}")
+            break
+        best = min(best, loss)
 
     def plotit(rates, losses, xlabel):
         fig = plt.figure()
@@ -432,13 +427,13 @@ def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
         ax.grid(True)
         plt.show()
 
-    plotit(recorder.lrs, recorder.tlosses, "Learning Rate")
+    plotit(step.lrs, step.tlosses, "Learning Rate")
 
-    rates = np.array(recorder.lrs)
+    rates = np.array(step.lrs)
     eff_rates = rates / (1 - p)
-    plotit(eff_rates, recorder.tlosses, "Eff. Learning Rate")
+    plotit(eff_rates, step.tlosses, "Eff. Learning Rate")
 
-    return recorder
+    return step
 
 def img_normalize(t):
     c, x, y = t.shape
@@ -446,7 +441,6 @@ def img_normalize(t):
     t = t - t.mean(dim=1, keepdim=True)
     t = t / t.std(dim=1, keepdim=True, unbiased=False)
     return t.view(c, x, y)
-
 
 def create_mnist_datasets(heldout=0, randomize=False):
 
@@ -519,7 +513,7 @@ class FullCrossEntropyLoss(nn.Module):
 
     def forward(self, input, target):
         if target.dim() == 1:
-            nlabels = input.shape[-1]
+            n, nlabels = input.shape
             target = onehot(target, nlabels).to(input.device)
-        return  -(F.log_softmax(input, dim=1) * target).mean()
+        return  -(F.log_softmax(input, dim=1) * target).sum() / n 
 

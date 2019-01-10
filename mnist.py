@@ -197,11 +197,10 @@ class Trainer():
         "The training loop--calls out to Callback at appropriate points"
 
         statusbar = tqdm if not silent else lambda x, **args: x
-        if batches is None:
-            batches = epochs_to_batches(self.train_set, epochs, bs)
+        cycles = batches if batches is not None else epochs_to_batches(self.train_set, epochs, bs)
 
-        steps = self.train_steps(**dict(kwargs, batches=batches))
-        for step in statusbar(steps, total=batches):
+        steps = self.train_steps(**dict(kwargs, batches=batches, bs=bs, epochs=epochs))
+        for step in statusbar(steps, total=cycles):
             pass
         return step
 
@@ -343,7 +342,7 @@ def one_cycle(trainer, epochs, bs,
               lr_start, lr_middle, lr_end=None,
               p_start=0.95, p_middle=0.85, p_end=None,
               batches=None, callback=None, yielder=False,
-              **kwargs):
+              authority=None, **kwargs):
     "Trains with cyclic learning rate & momentum."
 
     def schedule(batches, start, middle, end=None):
@@ -361,8 +360,8 @@ def one_cycle(trainer, epochs, bs,
     lr=schedule(batches, lr_start, lr_middle, lr_end)
 
     train = trainer.train_steps if yielder else trainer.train
-    return train(epochs=None, batches=batches,
-                 bs=bs, lr=lr, p=p, callback=callback)
+    return train(epochs=None, batches=batches, bs=bs, lr=lr, p=p,
+                 authority=authority, callback=callback)
 
 
 def percent(n):
@@ -509,8 +508,8 @@ class FullCrossEntropyLoss(nn.Module):
         super().__init__()
 
     def forward(self, input, target):
+        n, nlabels = input.shape
         if target.dim() == 1:
-            n, nlabels = input.shape
             target = onehot(target, nlabels).to(input.device)
         return  -(F.log_softmax(input, dim=1) * target).sum() / n 
 

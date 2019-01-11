@@ -11,8 +11,7 @@ import math
 import os
 import Augmentor
 from  functools import partial
-from tqdm.auto import tqdm
-
+from fastprogress import progress_bar
 
 def epochs_to_batches(ds, epochs, bs):
     return epochs * (len(ds) // bs)
@@ -104,9 +103,9 @@ class filter():
 
 class ValidationCallback(Callback):
     "Callback for sampling validation loss during training."
-    def __init__(self, trainer):
+    def __init__(self, trainer, bs=100):
         super().__init__(trainer)
-        self.vbatcher = Batcher(self.trainer.validation_set, bs=100)
+        self.vbatcher = Batcher(self.trainer.validation_set, bs)
         self.classifier = Classifier(self.trainer.net)
         self.vlosses = []
 
@@ -126,11 +125,25 @@ class ValidationCallback(Callback):
         vals = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
         self.plotit(vals, "batch", "Validation Loss", ltrim)
 
+def onehot(target, nlabels):
+    return torch.eye(nlabels)[target]
+
+class FullCrossEntropyLoss(nn.Module):
+    "Cross-entropy loss which takes either class labels or prob. dist. as target."
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input, target):
+        n, nlabels = input.shape
+        if target.dim() == 1:
+            target = onehot(target, nlabels).to(input.device)
+        return  -(F.log_softmax(input, dim=1) * target).sum() / n 
+
 class Trainer():
     "Trains a model using datasets, optimizer, and loss."
     def __init__(self, model, train_set, validation_set=None,
                  optimizer=partial(optim.Adam, betas=(0.9, 0.99)),
-                 loss=nn.CrossEntropyLoss):
+                 loss=FullCrossEntropyLoss):
 
         self.train_set = train_set
         self.validation_set = validation_set
@@ -154,9 +167,9 @@ class Trainer():
             else:
                 raise KeyError("Cannot find momentum in param_group")
 
-    def train_steps(self, epochs=None, batches=None, bs=64,
+    def train_steps(self, epochs=None, batches=None, bs=None,
                     lr=0.03, p=0.90, callback=None,
-                    authority=None, silent=False, **kwargs):
+                    authority=None, **kwargs):
         "Iterator interface to the training loop."
 
         self.stop_requested = False;
@@ -193,15 +206,15 @@ class Trainer():
 
         callback.on_train_end()
 
-    def train(self, epochs=None, batches=None, bs=None,  silent=False, **kwargs):
+    def train(self, epochs=None, batches=None, bs=None, **kwargs):
         "The training loop--calls out to Callback at appropriate points"
 
-        statusbar = tqdm if not silent else lambda x, **args: x
         cycles = batches if batches is not None else epochs_to_batches(self.train_set, epochs, bs)
-
         steps = self.train_steps(**dict(kwargs, batches=batches, bs=bs, epochs=epochs))
-        for step in statusbar(steps, total=cycles):
+
+        for step in progress_bar(steps, total=cycles):
             pass
+
         return step
 
 class Classifier():
@@ -363,7 +376,6 @@ def one_cycle(trainer, epochs, bs,
     return train(epochs=None, batches=batches, bs=bs, lr=lr, p=p,
                  authority=authority, callback=callback)
 
-
 def percent(n):
     return "%.2f%%" % (100 * n)
 
@@ -405,7 +417,7 @@ def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     "Sweep learning rate for model and display loss."
 
     lr = exp_interpolator(start, start*10**decades, steps)
-    steps = trainer.train_steps(epochs=None, batches=steps, bs=bs, lr=lr, p=p, silent=True, **kwargs)
+    steps = trainer.train_steps(epochs=None, batches=steps, bs=bs, lr=lr, p=p, **kwargs)
     best = math.inf
     for i, step in enumerate(steps):
         loss = step.tlosses[-1]
@@ -456,7 +468,6 @@ def create_mnist_datasets(heldout=0, randomize=False):
                           transforms.Lambda(img_normalize)
                        ])
 
-
     centered_crops = Augmentor.Pipeline()
     centered_crops.crop_by_size(1.0, cropsize, cropsize, centre=True)
     centered_crops.resize(1.0, 28, 28)
@@ -470,7 +481,7 @@ def create_mnist_datasets(heldout=0, randomize=False):
 
     train_au = datasets.MNIST('./data', train=True,  download=True, transform=augmented)
     train_na = datasets.MNIST('./data', train=True,  download=True, transform=nonaugmented)
-    test_set = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
+    testset = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
 
     indices = torch.arange(len(train_na))
     if randomize:
@@ -483,7 +494,7 @@ def create_mnist_datasets(heldout=0, randomize=False):
         train_set = train_au
         valid_set = None
 
-    return (train_set, valid_set, test_set)
+    return (train_set, valid_set, testset)
 
 def save_model(model, filename):
     "Write the parameters of a model to a file."
@@ -495,21 +506,3 @@ def read_model(model, filename):
     model.load_state_dict(torch.load(filename))
     model.eval()
     return model
-
-####
-
-
-def onehot(target, nlabels):
-    return torch.eye(nlabels)[target]
-
-class FullCrossEntropyLoss(nn.Module):
-    "Cross-entropy loss which takes either class labels or prob. dist. as target."
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, input, target):
-        n, nlabels = input.shape
-        if target.dim() == 1:
-            target = onehot(target, nlabels).to(input.device)
-        return  -(F.log_softmax(input, dim=1) * target).sum() / n 
-

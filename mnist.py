@@ -132,6 +132,7 @@ class ValidationCallback(Callback):
         ax.plot(ltrim + np.arange(len(vlosses)), vlosses, label="valid")
 
         if include_train:
+            f = filter(tc) # new filter with no internal state
             filtered = [f(v) for v in self.tlosses]
             tlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
             ax.plot(ltrim + np.arange(len(tlosses)), tlosses, label="train")
@@ -469,52 +470,6 @@ def img_normalize(t):
     t = t / t.std(dim=1, keepdim=True, unbiased=False)
     return t.view(c, x, y)
 
-def create_mnist_datasets(heldout=0, randomize=False):
-
-    rotate_distort = Augmentor.Pipeline()
-    rotate_distort.random_distortion(1.0, 4, 4, magnitude=1)
-    rotate_distort.rotate(probability=1.0, max_left_rotation=10, max_right_rotation=10)  # probably good
-
-    cropsize = 25
-    noncentered_crops = Augmentor.Pipeline()
-    noncentered_crops.crop_by_size(1.0, cropsize, cropsize, centre=False)
-    noncentered_crops.resize(1.0, 28, 28)
-
-    augmented = transforms.Compose([
-                          noncentered_crops.torch_transform(),
-                          rotate_distort.torch_transform(),
-                          transforms.ToTensor(),
-                          transforms.Lambda(img_normalize)
-                       ])
-
-    centered_crops = Augmentor.Pipeline()
-    centered_crops.crop_by_size(1.0, cropsize, cropsize, centre=True)
-    centered_crops.resize(1.0, 28, 28)
-
-    nonaugmented  = transforms.Compose([
-                          centered_crops.torch_transform(),
-                          transforms.ToTensor(),
-                          transforms.Lambda(img_normalize)
-                       ])
-
-
-    train_au = datasets.MNIST('./data', train=True,  download=True, transform=augmented)
-    train_na = datasets.MNIST('./data', train=True,  download=True, transform=nonaugmented)
-    testset = datasets.MNIST('./data', train=False, download=True, transform=nonaugmented)
-
-    indices = torch.arange(len(train_na))
-    if randomize:
-        np.random.shuffle(indices)
-
-    if heldout > 0:
-        train_set = torch.utils.data.Subset(train_au, indices[:-heldout])
-        valid_set = torch.utils.data.Subset(train_na, indices[-heldout:])
-    else:
-        train_set = train_au
-        valid_set = None
-
-    return (train_set, valid_set, testset)
-
 def save_model(model, filename):
     "Write the parameters of a model to a file."
     sd = model.state_dict()
@@ -525,3 +480,53 @@ def read_model(model, filename):
     model.load_state_dict(torch.load(filename))
     model.eval()
     return model
+
+####
+
+def augmented_pipeline():
+    rotate_distort = Augmentor.Pipeline()
+    rotate_distort.random_distortion(1.0, 4, 4, magnitude=1)
+    rotate_distort.rotate(probability=1.0, max_left_rotation=10, max_right_rotation=10)
+
+    cropsize = 25
+    noncentered_crops = Augmentor.Pipeline()
+    noncentered_crops.crop_by_size(1.0, cropsize, cropsize, centre=False)
+    noncentered_crops.resize(1.0, 28, 28)
+
+    return transforms.Compose([
+                          noncentered_crops.torch_transform(),
+                          rotate_distort.torch_transform(),
+                          transforms.ToTensor(),
+                          transforms.Lambda(img_normalize)
+                      ])
+
+def nonaugmented_pipeline():
+    centered_crops = Augmentor.Pipeline()
+    cropsize = 25
+    centered_crops.crop_by_size(1.0, cropsize, cropsize, centre=True)
+    centered_crops.resize(1.0, 28, 28)
+
+    return   transforms.Compose([
+                          centered_crops.torch_transform(),
+                          transforms.ToTensor(),
+                          transforms.Lambda(img_normalize)
+                        ])
+
+def mnist_trainset(heldout=0, randomize=False, augmented=True):
+    xform = augmented_pipeline() if augmented else nonaugmented_pipeline()
+    train = datasets.MNIST('./data', train=True,  download=True, transform=xform)
+
+    indices = torch.arange(len(train))
+    if randomize:
+        np.random.shuffle(indices)
+
+    if heldout > 0:
+        train_set = torch.utils.data.Subset(train, indices[:-heldout])
+        valid_set = torch.utils.data.Subset(train, indices[-heldout:])
+        return (train_set, valid_set)
+    else:
+        return train
+
+def mnist_testset(augmented=False):
+    xform = augmented_pipeline() if augmented else nonaugmented_pipeline()
+    return datasets.MNIST('./data', train=False, download=True, transform=xform)

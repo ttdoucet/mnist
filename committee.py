@@ -19,7 +19,8 @@ def populate(npop):
               'p_end' : p_min}
 
     # Our training set, with augmentation.
-    tset, _, testset = create_mnist_datasets(heldout=0, randomize=False)
+    trainset = mnist_trainset(heldout=0)
+    testset = mnist_testset()
 
     # The names of the files containing the models' weights.
     filenames = [ f"model{n+1}.pt" for n in range(npop) ]
@@ -33,7 +34,7 @@ def populate(npop):
 
             # Take a new untrained MNIST model and wrap
             # it in a Trainer.
-            trainer = Trainer(mnist_model(), tset, None)
+            trainer = Trainer(mnist_model(), trainset)
 
             # Train for one cycle using the parameter specified above.
             one_cycle(trainer, **params)
@@ -50,7 +51,7 @@ def populate(npop):
 
 def run_trials(npop, committee, trials):
     "For each trial, form a committee out of the population and classify."
-    _, _, testset = create_mnist_datasets(heldout=0, randomize=False)
+    testset = mnist_testset()
 
     filenames = [ f"model{n+1}.pt" for n in range(npop) ]
 

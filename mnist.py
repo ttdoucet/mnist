@@ -118,12 +118,29 @@ class ValidationCallback(Callback):
         lss = self.trainer.loss(logits, labels.to("cuda")).data.item()
         self.vlosses.append(lss)
 
-    def plot_vloss(self, ltrim=0, rtrim=0, tc=0.99):
+    def plot_vloss(self, ltrim=0, rtrim=0, tc=0.99, include_train=True, ymax=None):
         "Plot sampled, filtered, and trimmed validation loss."
+
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
+        if ymax is not None:
+            ax.set_ylim([0, ymax])
+
         f = filter(tc)
         filtered = [f(v) for v in self.vlosses]
-        vals = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
-        self.plotit(vals, "batch", "Validation Loss", ltrim)
+        vlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
+        ax.plot(ltrim + np.arange(len(vlosses)), vlosses, label="valid")
+
+        if include_train:
+            filtered = [f(v) for v in self.tlosses]
+            tlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
+            ax.plot(ltrim + np.arange(len(tlosses)), tlosses, label="train")
+
+        ax.grid(True)
+        ax.set_ylabel("loss")
+        ax.set_xlabel("batch")
+        ax.legend(loc="upper right")
+        plt.show()
 
 def onehot(target, nlabels):
     return torch.eye(nlabels)[target]
@@ -354,13 +371,15 @@ def exp_interpolator(a, b, steps):
 def one_cycle(trainer, epochs, bs,
               lr_start, lr_middle, lr_end=None,
               p_start=0.95, p_middle=0.85, p_end=None,
+              pct=0.3,
               batches=None, callback=None, yielder=False,
               authority=None, **kwargs):
     "Trains with cyclic learning rate & momentum."
 
-    def schedule(batches, start, middle, end=None):
+    def schedule(batches, start, middle, end=None, pct=0.3):
         if end is None: end=start
-        n = int(batches * 0.3)
+
+        n = int(batches * pct)
 
         f = cos_interpolator(start, middle, n)
         g = cos_interpolator(middle, end, batches - n)
@@ -369,8 +388,8 @@ def one_cycle(trainer, epochs, bs,
     if batches is None:
         batches = epochs_to_batches(trainer.train_set, epochs, bs)
 
-    p=schedule(batches, p_start, p_middle, p_end)
-    lr=schedule(batches, lr_start, lr_middle, lr_end)
+    p=schedule(batches, p_start, p_middle, p_end, pct)
+    lr=schedule(batches, lr_start, lr_middle, lr_end, pct)
 
     train = trainer.train_steps if yielder else trainer.train
     return train(epochs=None, batches=batches, bs=bs, lr=lr, p=p,

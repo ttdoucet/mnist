@@ -78,7 +78,7 @@ class Callback():
         elr = lr / (1 - mom)
         self.plotit(elr, "batch", "Effective Learning Rate")
 
-    def plot_tloss(self, ltrim=0, rtrim=0, tc=0.99):
+    def plot_tloss(self, ltrim=0, rtrim=0, tc=10):
         "Plot sampled, filtered, and trimmed training loss."
         f = filter(tc)
         filtered = [f(v) for v in self.tlosses]
@@ -118,7 +118,7 @@ class ValidationCallback(Callback):
         lss = self.trainer.loss(logits, labels.to("cuda")).data.item()
         self.vlosses.append(lss)
 
-    def plot_vloss(self, ltrim=0, rtrim=0, tc=0.99, include_train=True, ymax=None):
+    def plot_vloss(self, ltrim=0, rtrim=0, tc=10, include_train=True, ymax=None):
         "Plot sampled, filtered, and trimmed validation loss."
 
         fig = plt.figure()

@@ -90,15 +90,15 @@ class Callback():
 
 class filter():
     "Exponential moving average filter."
-    def __init__(self, tc=0.9):
+    def __init__(self, tc=10):
         self.a = None
-        self.tc = tc
-        pass
+        self.k = 1/tc
+
     def __call__(self, v):
         if self.a is None:
             self.a = v
         else:
-            self.a = self.tc * self.a + (1-self.tc) * v
+            self.a = (1-self.k) * self.a + self.k * v
         return self.a
 
 class ValidationCallback(Callback):

@@ -16,7 +16,7 @@ from fastprogress import progress_bar
 def epochs_to_batches(ds, epochs, bs):
     return epochs * (len(ds) // bs)
 
-def Batcher(ds, epochs=None, batches=None, bs=1, shuffle=True):
+def Batcher(ds, bs, epochs=None, batches=None, shuffle=True):
     "Iterator interface to dataset."
 
     def by_epoch(ds, epochs=1, bs=1, shuffle=True):
@@ -78,9 +78,9 @@ class Callback():
         elr = lr / (1 - mom)
         self.plotit(elr, "batch", "Effective Learning Rate")
 
-    def plot_tloss(self, ltrim=0, rtrim=0, tc=10):
+    def plot_tloss(self, ltrim=0, rtrim=0, halflife=0):
         "Plot sampled, filtered, and trimmed training loss."
-        f = filter(tc)
+        f = filter(halflife)
         filtered = [f(v) for v in self.tlosses]
         vals = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
         self.plotit(vals, "batch", "Training Loss", ltrim)
@@ -90,23 +90,19 @@ class Callback():
 
 class filter():
     "Exponential moving average filter."
-    def __init__(self, tc=10):
+    def __init__(self, halflife=10):
         self.a = None
-        self.k = 1/tc
+        self.d = 0 if halflife==0 else 0.5 ** (1/halflife)
 
     def __call__(self, v):
-        if self.a is None:
-            self.a = v
-        else:
-            self.a = (1-self.k) * self.a + self.k * v
+        self.a = v if self.a is None else self.d * self.a + (1-self.d) * v
         return self.a
 
 class ValidationCallback(Callback):
     "Callback for sampling validation loss during training."
     def __init__(self, trainer, bs=100):
         super().__init__(trainer)
-        self.vbatcher = Batcher(self.trainer.validation_set, bs)
-        self.classifier = Classifier(self.trainer.net)
+        self.vbatcher = Batcher(self.trainer.validation_set, bs=bs)
         self.vlosses = []
 
     def on_train_step(self, loss, lr, mom):
@@ -114,11 +110,11 @@ class ValidationCallback(Callback):
 
         # We sample the validation loss.
         images, labels = next(iter(self.vbatcher))
-        logits = self.classifier.logits(images)
-        lss = self.trainer.loss(logits, labels.to("cuda")).data.item()
-        self.vlosses.append(lss)
+        logits = self.trainer.net(images.cuda())
+        vloss = self.trainer.loss(logits, labels.to("cuda")).data.item()
+        self.vlosses.append(vloss)
 
-    def plot_vloss(self, ltrim=0, rtrim=0, tc=10, include_train=True, ymax=None):
+    def plot_vloss(self, ltrim=0, rtrim=0, halflife=0, include_train=True, ymax=None):
         "Plot sampled, filtered, and trimmed validation loss."
 
         fig = plt.figure()
@@ -126,13 +122,13 @@ class ValidationCallback(Callback):
         if ymax is not None:
             ax.set_ylim([0, ymax])
 
-        f = filter(tc)
+        f = filter(halflife)
         filtered = [f(v) for v in self.vlosses]
         vlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
         ax.plot(ltrim + np.arange(len(vlosses)), vlosses, label="valid")
 
         if include_train:
-            f = filter(tc) # new filter with no internal state
+            f = filter(halflife)
             filtered = [f(v) for v in self.tlosses]
             tlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
             ax.plot(ltrim + np.arange(len(tlosses)), tlosses, label="train")
@@ -194,7 +190,7 @@ class Trainer():
         if callback is None:
             callback = Callback(self)
 
-        batcher = Batcher(self.train_set, epochs, batches, bs, shuffle=True)
+        batcher = Batcher(self.train_set, bs, epochs, batches, shuffle=True)
         callback.on_train_begin()
 
         for i, (batch, labels) in enumerate(batcher):
@@ -210,15 +206,14 @@ class Trainer():
                 labels = authority(batch)
 
             self.net.train()
-            pred = self.net(batch.cuda())
-
-            loss = self.loss(pred, labels.cuda())
+            logits = self.net(batch.cuda())
+            loss = self.loss(logits, labels.cuda())
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
 
             with torch.no_grad():
-                callback.on_train_step(loss.data.item(), learning_rate, momentum)
+                callback.on_train_step(loss, learning_rate, momentum)
 
             yield(callback)
 
@@ -285,7 +280,7 @@ def show_mistakes(classifier, ds, dds=None):
 
 def misclassified(classifier, ds, bs=100):
     "Iterates through mistakes made by classifier."
-    batcher = Batcher(ds, epochs=1, bs=bs, shuffle=False)
+    batcher = Batcher(ds, bs, epochs=1, shuffle=False)
     for n, (batch, labels) in enumerate(batcher):
         pred = classifier(batch).cpu()
         mistakes = torch.nonzero(pred != labels)
@@ -294,7 +289,7 @@ def misclassified(classifier, ds, bs=100):
 
 def accuracy(classifier, ds, bs=100, include_loss=False):
     "Computes classifer accuracy and optionally loss on a dataset."
-    batcher = Batcher(ds, epochs=1, bs=bs)
+    batcher = Batcher(ds, bs, epochs=1)
     correct = tloss = 0
 
     lossftn = nn.NLLLoss()

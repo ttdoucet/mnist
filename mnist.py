@@ -54,10 +54,10 @@ class Callback():
         self.lrs.append(lr)
         self.moms.append(mom)
 
-    def plotit(self, vals, xlabel, ylabel, ltrim=0):
+    def plotit(self, vals, xlabel, ylabel, ltrim=0, **kwargs):
         fig = plt.figure()
         ax = fig.add_subplot(111)
-        ax.plot(ltrim + np.arange(len(vals)), vals)
+        ax.plot(ltrim + np.arange(len(vals)), vals, **kwargs)
         ax.grid(True)
         ax.set_ylabel(ylabel)
         ax.set_xlabel(xlabel)
@@ -65,25 +65,25 @@ class Callback():
 
     def plot_lr(self):
         "Plot learning rate schedule"
-        self.plotit(self.lrs, "batch", "Learning Rate")
+        self.plotit(self.lrs, "batch", "Learning Rate", color='C2')
 
     def plot_mom(self):
         "Plot momentum schedule"
-        self.plotit(self.moms, "batch", "Momentum")
+        self.plotit(self.moms, "batch", "Momentum", color='C2')
 
     def plot_elr(self):
         "Plot effective learning rate: lr/(1-mom)"
         lr = np.array(self.lrs)
         mom = np.array(self.moms)
         elr = lr / (1 - mom)
-        self.plotit(elr, "batch", "Effective Learning Rate")
+        self.plotit(elr, "batch", "Effective Learning Rate", color='C2')
 
     def plot_tloss(self, ltrim=0, rtrim=0, halflife=0):
         "Plot sampled, filtered, and trimmed training loss."
         f = filter(halflife)
         filtered = [f(v) for v in self.tlosses]
         vals = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
-        self.plotit(vals, "batch", "Training Loss", ltrim)
+        self.plotit(vals, "batch", "Training Loss", ltrim, color='C1')
 
     def on_train_end(self):
         pass
@@ -125,13 +125,13 @@ class ValidationCallback(Callback):
         f = filter(halflife)
         filtered = [f(v) for v in self.vlosses]
         vlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
-        ax.plot(ltrim + np.arange(len(vlosses)), vlosses, label="valid")
+        ax.plot(ltrim + np.arange(len(vlosses)), vlosses, label="valid", color='C0')
 
         if include_train:
             f = filter(halflife)
             filtered = [f(v) for v in self.tlosses]
             tlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
-            ax.plot(ltrim + np.arange(len(tlosses)), tlosses, label="train")
+            ax.plot(ltrim + np.arange(len(tlosses)), tlosses, label="train", color='C1')
 
         ax.grid(True)
         ax.set_ylabel("loss")
@@ -304,50 +304,6 @@ def accuracy(classifier, ds, bs=100, include_loss=False):
     loss = tloss / n
     return (accuracy, loss) if include_loss else accuracy
 
-class Residual(nn.Module):
-    def __init__(self, d):
-        super().__init__()
-        self.bn = nn.BatchNorm2d(d)
-        self.conv3x3 = nn.Conv2d(in_channels=d, out_channels=d, kernel_size=3, padding=1)
-
-    def forward(self, x):
-        x = self.bn(x)
-        return x + F.relu(self.conv3x3(x))
-
-class Flatten(nn.Module):
-    def forward(self, x):
-        return x.view(x.size()[0], -1)
-
-def mnist_model():
-    "Returns an initialized but untrained model for MNIST."
-    return nn.Sequential(
-               nn.Conv2d(in_channels=1, out_channels=128, kernel_size=5, padding=2),
-               nn.ReLU(),
-
-               Residual(128),
-               nn.MaxPool2d(2),
-               Residual(128),
-
-               nn.BatchNorm2d(128),
-               nn.Conv2d(128, 256, 3, padding=1),
-               nn.ReLU(),
-               nn.MaxPool2d(2),
-               Residual(256),
-
-               nn.BatchNorm2d(256),
-               nn.Conv2d(256, 512, 3, padding=1),
-               nn.ReLU(),
-               nn.MaxPool2d(2, ceil_mode=True),
-               Residual(512),
-
-               nn.BatchNorm2d(512),
-               nn.AvgPool2d(kernel_size=4),
-               Flatten(),
-
-               nn.Linear(512,10),
-               # Softmax provided during training.
-           )
-
 def fconcat(f, g, steps):
     return lambda n: f(n) if n < steps else g(n-steps)
 
@@ -476,7 +432,51 @@ def read_model(model, filename):
     model.eval()
     return model
 
-####
+## MNIST-specific
+
+class Residual(nn.Module):
+    def __init__(self, d):
+        super().__init__()
+        self.bn = nn.BatchNorm2d(d)
+        self.conv3x3 = nn.Conv2d(in_channels=d, out_channels=d, kernel_size=3, padding=1)
+
+    def forward(self, x):
+        x = self.bn(x)
+        return x + F.relu(self.conv3x3(x))
+
+class Flatten(nn.Module):
+    def forward(self, x):
+        return x.view(x.size()[0], -1)
+
+def mnist_model():
+    "Returns an initialized but untrained model for MNIST."
+    return nn.Sequential(
+               nn.Conv2d(in_channels=1, out_channels=128, kernel_size=5, padding=2),
+               nn.ReLU(),
+
+               Residual(128),
+               nn.MaxPool2d(2),
+               Residual(128),
+
+               nn.BatchNorm2d(128),
+               nn.Conv2d(128, 256, 3, padding=1),
+               nn.ReLU(),
+               nn.MaxPool2d(2),
+               Residual(256),
+
+               nn.BatchNorm2d(256),
+               nn.Conv2d(256, 512, 3, padding=1),
+               nn.ReLU(),
+               nn.MaxPool2d(2, ceil_mode=True),
+               Residual(512),
+
+               nn.BatchNorm2d(512),
+               nn.AvgPool2d(kernel_size=4),
+               Flatten(),
+
+               nn.Linear(512,10),
+               # Softmax provided during training.
+           )
 
 def augmented_pipeline():
     rotate_distort = Augmentor.Pipeline()

@@ -122,16 +122,16 @@ class ValidationCallback(Callback):
         if ymax is not None:
             ax.set_ylim([0, ymax])
 
-        f = filter(halflife)
-        filtered = [f(v) for v in self.vlosses]
-        vlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
-        ax.plot(ltrim + np.arange(len(vlosses)), vlosses, label="valid", color='C0')
-
         if include_train:
             f = filter(halflife)
             filtered = [f(v) for v in self.tlosses]
             tlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
             ax.plot(ltrim + np.arange(len(tlosses)), tlosses, label="train", color='C1')
+
+        f = filter(halflife)
+        filtered = [f(v) for v in self.vlosses]
+        vlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
+        ax.plot(ltrim + np.arange(len(vlosses)), vlosses, label="valid", color='C0')
 
         ax.grid(True)
         ax.set_ylabel("loss")

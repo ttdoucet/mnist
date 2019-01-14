@@ -123,18 +123,17 @@ class ValidationCallback(Callback):
         if ymax is not None:
             ax.set_ylim([0, ymax])
 
-        if include_train:
+        def plotit(data, label, color):
+            nonlocal start, stop
             f = filter(halflife)
-            filtered = [f(v) for v in self.tlosses]
+            filtered = [f(v) for v in data]
             start, stop, _ = slice(start, stop).indices(len(filtered))
-            tlosses = filtered[start:stop]
-            ax.plot(start + np.arange(len(tlosses)), tlosses, label="train", color='C1')
+            losses = filtered[start:stop]
+            ax.plot(start + np.arange(len(losses)), losses, label=label, color=color)
 
-        f = filter(halflife)
-        filtered = [f(v) for v in self.vlosses]
-        start, stop, _ = slice(start, stop).indices(len(filtered))
-        vlosses = filtered[start:stop]
-        ax.plot(start + np.arange(len(vlosses)), vlosses, label="valid", color='C0')
+        if include_train:
+            plotit(self.tlosses, label='train', color='C1')
+        plotit(self.vlosses, label="valid", color='C0');
 
         ax.grid(True)
         ax.set_ylabel("loss")

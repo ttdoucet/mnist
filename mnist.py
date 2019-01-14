@@ -511,7 +511,7 @@ def mnist_trainset(heldout=0, randomize=False, augmented=True):
     xform = augmented_pipeline() if augmented else nonaugmented_pipeline()
     train = datasets.MNIST('./data', train=True,  download=True, transform=xform)
 
-    indices = torch.arange(len(train))
+    indices = np.arange(len(train))
     if randomize:
         np.random.shuffle(indices)
 
@@ -520,7 +520,7 @@ def mnist_trainset(heldout=0, randomize=False, augmented=True):
         valid_set = torch.utils.data.Subset(train, indices[-heldout:])
         return (train_set, valid_set)
     else:
-        return train
+        return torch.utils.data.Subset(train, indices[:])
 
 def mnist_testset(augmented=False):
     xform = augmented_pipeline() if augmented else nonaugmented_pipeline()

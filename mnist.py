@@ -78,12 +78,13 @@ class Callback():
         elr = lr / (1 - mom)
         self.plotit(elr, "batch", "Effective Learning Rate", color='C2')
 
-    def plot_tloss(self, ltrim=0, rtrim=0, halflife=0):
+    def plot_tloss(self, start=None, stop=None, halflife=0):
         "Plot sampled, filtered, and trimmed training loss."
         f = filter(halflife)
         filtered = [f(v) for v in self.tlosses]
-        vals = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
-        self.plotit(vals, "batch", "Training Loss", ltrim, color='C1')
+        start, stop, _ = slice(start, stop).indices(len(filtered))
+        vals = filtered[start:stop]
+        self.plotit(vals, "batch", "Training Loss", start, color='C1')
 
     def on_train_end(self):
         pass
@@ -114,7 +115,7 @@ class ValidationCallback(Callback):
         vloss = self.trainer.loss(logits, labels.to("cuda")).data.item()
         self.vlosses.append(vloss)
 
-    def plot_vloss(self, ltrim=0, rtrim=0, halflife=0, include_train=True, ymax=None):
+    def plot_vloss(self, start=None, stop=None, halflife=0, include_train=True, ymax=None):
         "Plot sampled, filtered, and trimmed validation loss."
 
         fig = plt.figure()
@@ -125,13 +126,15 @@ class ValidationCallback(Callback):
         if include_train:
             f = filter(halflife)
             filtered = [f(v) for v in self.tlosses]
-            tlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
-            ax.plot(ltrim + np.arange(len(tlosses)), tlosses, label="train", color='C1')
+            start, stop, _ = slice(start, stop).indices(len(filtered))
+            tlosses = filtered[start:stop]
+            ax.plot(start + np.arange(len(tlosses)), tlosses, label="train", color='C1')
 
         f = filter(halflife)
         filtered = [f(v) for v in self.vlosses]
-        vlosses = filtered[ltrim:-rtrim] if rtrim > 0 else filtered[ltrim:]
-        ax.plot(ltrim + np.arange(len(vlosses)), vlosses, label="valid", color='C0')
+        start, stop, _ = slice(start, stop).indices(len(filtered))
+        vlosses = filtered[start:stop]
+        ax.plot(start + np.arange(len(vlosses)), vlosses, label="valid", color='C0')
 
         ax.grid(True)
         ax.set_ylabel("loss")
@@ -400,17 +403,17 @@ def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     def plotit(rates, losses, xlabel):
         fig = plt.figure()
         ax = fig.add_subplot(111)
-        ax.semilogx(rates, losses)
+        ax.semilogx(rates, losses, color='C1')
         ax.set_xlabel(xlabel)
-        ax.set_ylabel("Loss")
+        ax.set_ylabel("train loss")
         ax.grid(True)
         plt.show()
 
-    plotit(step.lrs, step.tlosses, "Learning Rate")
+    plotit(step.lrs, step.tlosses, "learning rate")
 
     rates = np.array(step.lrs)
     eff_rates = rates / (1 - p)
-    plotit(eff_rates, step.tlosses, "Eff. Learning Rate")
+    plotit(eff_rates, step.tlosses, "eff. learning rate")
 
     return step
 
@@ -514,7 +517,6 @@ def mnist_trainset(heldout=0, randomize=False, augmented=True):
     indices = np.arange(len(train))
     if randomize:
         np.random.shuffle(indices)
-
     if heldout > 0:
         train_set = torch.utils.data.Subset(train, indices[:-heldout])
         valid_set = torch.utils.data.Subset(train, indices[-heldout:])

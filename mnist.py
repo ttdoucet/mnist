@@ -97,7 +97,7 @@ class Callback():
     def plot_loss(self, start=None, stop=None, step=None, ymax=None, halflife=0):
         "Plot sampled, filtered, and trimmed training loss."
         dslice = slice(start, stop, step)
-        plot = [self.axes(self.vlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
+        plot = [self.axes(self.tlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
         self.loss_plot( [plot] )
 
 class filter():
@@ -256,7 +256,6 @@ def show_mistakes(classifier, ds, dds=None):
     labels = [f"{ds[index][1]} not {pred}" for (index, pred) in mistakes ]
     plot_images(torch.cat([dds[index][0] for (index, _)  in mistakes]), labels=labels)
 
-
 def misclassified(classifier, ds, bs=100):
     "Iterates through mistakes made by classifier."
     batcher = Batcher(ds, bs, epochs=1, shuffle=False)
@@ -360,7 +359,6 @@ def plot_images(imgs, labels=None):
         if labels is not None:
             ax.annotate(labels[i], xy=(5,0))
     plt.show()
-
 
 def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     "Sweep learning rate for model and display loss."

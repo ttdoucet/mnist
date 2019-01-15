@@ -1,5 +1,4 @@
 # Written by Todd Doucet.
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,7 +7,6 @@ from torchvision import datasets, transforms
 import numpy as np
 import matplotlib.pyplot as plt
 import math
-import os
 import Augmentor
 from  functools import partial
 from fastprogress import progress_bar
@@ -18,14 +16,12 @@ def epochs_to_batches(ds, epochs, bs):
 
 def Batcher(ds, bs, epochs=None, batches=None, shuffle=True):
     "Iterator interface to dataset."
-
     def by_epoch(ds, epochs=1, bs=1, shuffle=True):
         for epoch in range(epochs):
             batcher = torch.utils.data.DataLoader(ds, batch_size=bs, shuffle=shuffle,
                                                   num_workers=4, drop_last=True)
             for data, labels in batcher:
                 yield (data, labels)
-
     def by_batch(ds, batches=None, bs=1, shuffle=True):
         n = 0
         while True:
@@ -73,7 +69,6 @@ class Callback():
 
     def plot_schedule(self, start=None, stop=None, step=None, plot_mom=True, plot_elr=False):
         "Plot learning rate and momentum schedule."
-
         dslice = slice(start, stop, step)
         lr = np.array(self.lrs)
         mom = np.array(self.moms)
@@ -101,13 +96,9 @@ class Callback():
 
     def plot_loss(self, start=None, stop=None, step=None, ymax=None, halflife=0):
         "Plot sampled, filtered, and trimmed training loss."
-
         dslice = slice(start, stop, step)
         plot = [self.axes(self.vlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
         self.loss_plot( [plot] )
-
-    def on_train_end(self):
-        pass
 
 class filter():
     "Exponential moving average filter."
@@ -132,12 +123,11 @@ class ValidationCallback(Callback):
         # Sample the validation loss.
         images, labels = next(iter(self.vbatcher))
         logits = self.trainer.net(images.cuda())
-        vloss = self.trainer.loss(logits, labels.to("cuda")).data.item()
+        vloss = self.trainer.loss(logits, labels.cuda()).item()
         self.vlosses.append(vloss)
 
     def plot_loss(self, start=None, stop=None, step=None,  halflife=0, include_train=True, ymax=None):
         "Plot sampled, filtered, and trimmed validation loss."
-
         dslice = slice(start, stop, step)
         vplot = [self.axes(self.vlosses, filter(halflife), dslice), {'label' : 'valid', 'color': 'C0'} ]
         tplot = [self.axes(self.tlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'}]
@@ -166,15 +156,10 @@ class Trainer():
 
         self.train_set = train_set
         self.validation_set = validation_set
-        self.stop_requested = False
         self.net = model.cuda()
         self.loss = loss()
         self.optimizer = optimizer(self.net.parameters(), lr=0.01)
 
-    def request_stop(self):
-        "A Callback can request that training stop."
-        self.stop_requested = True
-        
     def set_hyperparameters(self, lr, p):
         for param_group in self.optimizer.param_groups:
             param_group['lr'] = lr
@@ -186,12 +171,10 @@ class Trainer():
             else:
                 raise KeyError("Cannot find momentum in param_group")
 
-    def train_steps(self, epochs=None, batches=None, bs=None,
-                    lr=0.03, p=0.90, callback=None,
-                    authority=None, **kwargs):
+    def train_steps(self, lr, p, epochs=None, batches=None, bs=None,
+                    callback=None, authority=None, **kwargs):
         "Iterator interface to the training loop."
 
-        self.stop_requested = False;
         if callback is None:
             callback = Callback(self)
 
@@ -199,10 +182,6 @@ class Trainer():
         callback.on_train_begin()
 
         for i, (batch, labels) in enumerate(batcher):
-
-            if self.stop_requested is True:
-                break
-
             learning_rate=lr(i) if callable(lr) else lr
             momentum = p(i) if callable(p) else p
             self.set_hyperparameters(learning_rate, momentum)
@@ -219,20 +198,15 @@ class Trainer():
 
             with torch.no_grad():
                 callback.on_train_step(loss.item(), learning_rate, momentum)
-
             yield(callback)
 
-        callback.on_train_end()
-
-    def train(self, epochs=None, batches=None, bs=None, **kwargs):
+    def train(self, lr, p, epochs=None, batches=None, bs=None, **kwargs):
         "The training loop--calls out to Callback at appropriate points"
-
         cycles = batches if batches is not None else epochs_to_batches(self.train_set, epochs, bs)
-        steps = self.train_steps(**dict(kwargs, batches=batches, bs=bs, epochs=epochs))
 
+        steps = self.train_steps(lr, p, **dict(kwargs, batches=batches, bs=bs, epochs=epochs))
         for step in progress_bar(steps, total=cycles):
             pass
-
         return step
 
 class Classifier():
@@ -335,9 +309,7 @@ def one_cycle(trainer, epochs, bs,
 
     def schedule(batches, start, middle, end=None, pct=0.3):
         if end is None: end=start
-
         n = int(batches * pct)
-
         f = cos_interpolator(start, middle, n)
         g = cos_interpolator(middle, end, batches - n)
         return fconcat(f, g, n)
@@ -392,7 +364,6 @@ def plot_images(imgs, labels=None):
 
 def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     "Sweep learning rate for model and display loss."
-
     lr = exp_interpolator(start, start*10**decades, steps)
     steps = trainer.train_steps(epochs=None, batches=steps, bs=bs, lr=lr, p=p, **kwargs)
     best = math.inf
@@ -412,11 +383,9 @@ def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
         plt.show()
 
     plotit(step.lrs, step.tlosses, "learning rate")
-
     rates = np.array(step.lrs)
     eff_rates = rates / (1 - p)
     plotit(eff_rates, step.tlosses, "eff. learning rate")
-
     return step
 
 def img_normalize(t):
@@ -437,8 +406,7 @@ def read_model(model, filename):
     model.eval()
     return model
 
-## MNIST-specific
-
+## MNIST-specific stuff
 class Residual(nn.Module):
     def __init__(self, d):
         super().__init__()

@@ -1,7 +1,7 @@
 # Written by Todd Doucet.
-
 from mnist import *
 import argparse
+import os
 
 def populate(npop):
     "Train a population of neural nets and save them to disk."
@@ -48,7 +48,6 @@ def populate(npop):
 
     print(f"Population of {npop}: training is complete.")
 
-
 def run_trials(npop, committee, trials):
     "For each trial, form a committee out of the population and classify."
     testset = mnist_testset()
@@ -73,7 +72,6 @@ def run_trials(npop, committee, trials):
         # See how it does!
         acc = accuracy(voter_s, ds=testset)
         print(f"{i+1}: Committee of {committee} accuracy: {percent(acc)}")
-
         accs.append(acc)
 
     print(f"mean: {percent(np.mean(accs))} ({np.mean(accs):.6g})" )
@@ -96,7 +94,5 @@ def main():
     populate(args.population)
     run_trials(args.population, args.committee, args.trials)
 
-
 if __name__ == '__main__':
     main()
-

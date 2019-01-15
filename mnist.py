@@ -39,6 +39,7 @@ def Batcher(ds, bs, epochs=None, batches=None, shuffle=True):
     else:
         return by_batch(ds, batches, bs, shuffle)
 
+
 class Callback():
     "Recorder for Trainer class."
     def __init__(self, trainer):
@@ -54,10 +55,26 @@ class Callback():
         self.lrs.append(lr)
         self.moms.append(mom)
 
-    def plotit(self, vals, xlabel, ylabel, ltrim=0, **kwargs):
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
-        ax.plot(ltrim + np.arange(len(vals)), vals, **kwargs)
+    def axes(self, data, filt, dslice):
+        filtered = [filt(v) for v in data]
+        ys = filtered[dslice]
+        xs = np.arange(len(data))[dslice]
+        return (xs, ys)
+
+    def loss_plot(self, plots, ymax=None):
+        fig, ax = plt.subplots()
+        for (xs, ys), args in plots:
+            ax.plot(xs, ys, **args)
+            ax.grid(True)
+            ax.set_ylabel("loss")
+            ax.set_xlabel("batch")
+            ax.legend(loc="upper right")
+            if ymax is not None:
+                ax.set_ylim([None, ymax])
+
+    def sched_plot(self, vals, xlabel, ylabel, start=0, **kwargs):
+        fig, ax = plt.subplots()
+        ax.plot(start + np.arange(len(vals)), vals, **kwargs)
         ax.grid(True)
         ax.set_ylabel(ylabel)
         ax.set_xlabel(xlabel)
@@ -65,26 +82,25 @@ class Callback():
 
     def plot_lr(self):
         "Plot learning rate schedule"
-        self.plotit(self.lrs, "batch", "Learning Rate", color='C2')
+        self.sched_plot(self.lrs, "batch", "Learning Rate", color='C2')
 
     def plot_mom(self):
         "Plot momentum schedule"
-        self.plotit(self.moms, "batch", "Momentum", color='C2')
+        self.sched_plot(self.moms, "batch", "Momentum", color='C2')
 
     def plot_elr(self):
         "Plot effective learning rate: lr/(1-mom)"
         lr = np.array(self.lrs)
         mom = np.array(self.moms)
         elr = lr / (1 - mom)
-        self.plotit(elr, "batch", "Effective Learning Rate", color='C2')
+        self.sched_plot(elr, "batch", "Effective Learning Rate", color='C2')
 
-    def plot_tloss(self, start=None, stop=None, halflife=0):
+    def plot_loss(self, start=None, stop=None, step=None, ymax=None, halflife=0):
         "Plot sampled, filtered, and trimmed training loss."
-        f = filter(halflife)
-        filtered = [f(v) for v in self.tlosses]
-        start, stop, _ = slice(start, stop).indices(len(filtered))
-        vals = filtered[start:stop]
-        self.plotit(vals, "batch", "Training Loss", start, color='C1')
+
+        dslice = slice(start, stop, step)
+        plot = [self.axes(self.vlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
+        self.loss_plot( [plot] )
 
     def on_train_end(self):
         pass
@@ -109,36 +125,20 @@ class ValidationCallback(Callback):
     def on_train_step(self, loss, lr, mom):
         super().on_train_step(loss, lr, mom)
 
-        # We sample the validation loss.
+        # Sample the validation loss.
         images, labels = next(iter(self.vbatcher))
         logits = self.trainer.net(images.cuda())
         vloss = self.trainer.loss(logits, labels.to("cuda")).data.item()
         self.vlosses.append(vloss)
 
-    def plot_vloss(self, start=None, stop=None, halflife=0, include_train=True, ymax=None):
+    # What about just the training loss now that this overrides the base class version?
+    def plot_loss(self, start=None, stop=None, step=None,  halflife=0, include_train=True, ymax=None):
         "Plot sampled, filtered, and trimmed validation loss."
 
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
-        if ymax is not None:
-            ax.set_ylim([0, ymax])
-
-        def plotit(data, label, color):
-            nonlocal start, stop
-            f = filter(halflife)
-            filtered = [f(v) for v in data]
-            start, stop, _ = slice(start, stop).indices(len(filtered))
-            losses = filtered[start:stop]
-            ax.plot(start + np.arange(len(losses)), losses, label=label, color=color)
-
-        if include_train:
-            plotit(self.tlosses, label='train', color='C1')
-        plotit(self.vlosses, label="valid", color='C0');
-
-        ax.grid(True)
-        ax.set_ylabel("loss")
-        ax.set_xlabel("batch")
-        ax.legend(loc="upper right")
+        dslice = slice(start, stop, step)
+        vplot = [self.axes(self.vlosses, filter(halflife), dslice), {'label' : 'valid', 'color': 'C0'} ]
+        tplot = [self.axes(self.tlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'}]
+        self.loss_plot( [tplot, vplot] if include_train else [ vplot ] )
         plt.show()
 
 def onehot(target, nlabels):
@@ -215,7 +215,7 @@ class Trainer():
             self.optimizer.step()
 
             with torch.no_grad():
-                callback.on_train_step(loss, learning_rate, momentum)
+                callback.on_train_step(loss.item(), learning_rate, momentum)
 
             yield(callback)
 

@@ -72,28 +72,34 @@ class Callback():
             if ymax is not None:
                 ax.set_ylim([None, ymax])
 
-    def sched_plot(self, vals, xlabel, ylabel, start=0, **kwargs):
-        fig, ax = plt.subplots()
-        ax.plot(start + np.arange(len(vals)), vals, **kwargs)
-        ax.grid(True)
-        ax.set_ylabel(ylabel)
-        ax.set_xlabel(xlabel)
-        plt.show()
+    def plot_schedule(self, start=None, stop=None, step=None, plot_mom=True, plot_elr=False):
+        "Plot learning rate and momentum schedule."
 
-    def plot_lr(self):
-        "Plot learning rate schedule"
-        self.sched_plot(self.lrs, "batch", "Learning Rate", color='C2')
-
-    def plot_mom(self):
-        "Plot momentum schedule"
-        self.sched_plot(self.moms, "batch", "Momentum", color='C2')
-
-    def plot_elr(self):
-        "Plot effective learning rate: lr/(1-mom)"
+        dslice = slice(start, stop, step)
         lr = np.array(self.lrs)
         mom = np.array(self.moms)
         elr = lr / (1 - mom)
-        self.sched_plot(elr, "batch", "Effective Learning Rate", color='C2')
+
+        fig, ax = plt.subplots()
+        if plot_elr:
+            elrs = self.axes(elr, filter(0), dslice)
+            ax.plot(*elrs, label='ELR', color='C0')
+
+        lrs = self.axes(lr, filter(0), dslice)
+        ax.plot(*lrs, label='LR', color='C9')
+
+        if plot_mom:
+            ax2 = ax.twinx()
+            moms = self.axes(mom, filter(0), dslice)
+            ax2.plot(*moms, label='MOM', color='C6')
+            ax2.legend(loc='center right')
+            ax2.set_ylabel("Momentum")
+
+        ax.legend(loc='upper right')
+        ax.grid(True)
+        ax.set_ylabel('Learning rate')
+        ax.set_xlabel('batch')
+        plt.show()
 
     def plot_loss(self, start=None, stop=None, step=None, ymax=None, halflife=0):
         "Plot sampled, filtered, and trimmed training loss."
@@ -357,8 +363,7 @@ def show_image(v, title=None):
     if type(v) is torch.Tensor:
         v = v.numpy()
     v = np.squeeze(v, axis=0)
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.set_title(title)
     ax.set_xticks([])
     ax.set_yticks([])
@@ -400,8 +405,7 @@ def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
         best = min(best, loss)
 
     def plotit(rates, losses, xlabel):
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
+        fig, ax = plt.subplots()
         ax.semilogx(rates, losses, color='C1')
         ax.set_xlabel(xlabel)
         ax.set_ylabel("train loss")

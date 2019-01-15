@@ -39,7 +39,6 @@ def Batcher(ds, bs, epochs=None, batches=None, shuffle=True):
     else:
         return by_batch(ds, batches, bs, shuffle)
 
-
 class Callback():
     "Recorder for Trainer class."
     def __init__(self, trainer):
@@ -137,7 +136,6 @@ class ValidationCallback(Callback):
         vloss = self.trainer.loss(logits, labels.to("cuda")).data.item()
         self.vlosses.append(vloss)
 
-    # What about just the training loss now that this overrides the base class version?
     def plot_loss(self, start=None, stop=None, step=None,  halflife=0, include_train=True, ymax=None):
         "Plot sampled, filtered, and trimmed validation loss."
 
@@ -358,7 +356,7 @@ def one_cycle(trainer, epochs, bs,
 def percent(n):
     return "%.2f%%" % (100 * n)
 
-def show_image(v, title=None):
+def show_image(v, title=None, interpolation='bilinear'):
     "Displays numpy or torch array as image."
     if type(v) is torch.Tensor:
         v = v.numpy()
@@ -367,9 +365,9 @@ def show_image(v, title=None):
     ax.set_title(title)
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.imshow(v, cmap="Greys", )
+    ax.imshow(v, interpolation=interpolation, cmap="Greys", )
 
-def plot_images(batch, title=None, labels=None):
+def plot_images(batch, labels=None):
     "Displays batch of images in a grid."
     if type(batch) is torch.Tensor:
         batch = batch.cpu().detach().numpy()
@@ -380,16 +378,16 @@ def plot_images(batch, title=None, labels=None):
     if (s*s < n):
         s += 1
 
-    fig = plt.figure(figsize=(10,10))
-    fig.canvas.set_window_title(title)
+    fig = plt.figure(figsize=(6,6))
     for i in range(n):
         ax = fig.add_subplot(s, s, i+1)
         ax.set_xticks([])
         ax.set_yticks([])
         ax.axis('off')
-        ax.imshow(batch[i,:,:], cmap="Greys")
+        ax.imshow(batch[i,:,:], interpolation='bilinear', cmap="Greys")
         if labels is not None:
             ax.annotate(labels[i], xy=(5,0))
+    plt.show()
 
 def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     "Sweep learning rate for model and display loss."

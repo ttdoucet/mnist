@@ -92,11 +92,10 @@ class Callback():
             moms = self.axes(mom, filter(0), dslice)
             ax2.plot(*moms, label='MOM', color='C6')
             ax2.legend(loc='center right')
-            ax2.set_ylabel("Momentum")
+            ax2.set_ylabel("Momentum", color='C6')
 
         ax.legend(loc='upper right')
-        ax.grid(True)
-        ax.set_ylabel('Learning rate')
+        ax.set_ylabel('Learning rate', color='C9')
         ax.set_xlabel('batch')
         plt.show()
 
@@ -367,27 +366,29 @@ def show_image(v, title=None, interpolation='bilinear'):
     ax.set_yticks([])
     ax.imshow(v, interpolation=interpolation, cmap="Greys", )
 
-def plot_images(batch, labels=None):
+def plot_images(imgs, labels=None):
     "Displays batch of images in a grid."
-    if type(batch) is torch.Tensor:
-        batch = batch.cpu().detach().numpy()
-    n = batch.shape[-1]
-    batch = batch.reshape(-1, n, n)
-    n = batch.shape[0]
+    if type(imgs) is torch.Tensor:
+        imgs = imgs.cpu().detach().numpy()
+
+    *_, r, c = imgs.shape
+    imgs = imgs.reshape(-1, r, c)
+    n = imgs.shape[0]
     s = int(math.sqrt(n) + 0.5)
     if (s*s < n):
         s += 1
 
-    fig = plt.figure(figsize=(6,6))
+    fig, ax = plt.subplots(figsize=(6,6))
     for i in range(n):
-        ax = fig.add_subplot(s, s, i+1)
+        ax = plt.subplot2grid( (s,s), (i//s, i%s) )
         ax.set_xticks([])
         ax.set_yticks([])
         ax.axis('off')
-        ax.imshow(batch[i,:,:], interpolation='bilinear', cmap="Greys")
+        ax.imshow(imgs[i,:,:], interpolation='bilinear', cmap="Greys")
         if labels is not None:
             ax.annotate(labels[i], xy=(5,0))
     plt.show()
+
 
 def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     "Sweep learning rate for model and display loss."

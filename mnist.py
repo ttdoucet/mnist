@@ -35,6 +35,12 @@ def Batcher(ds, bs, epochs=None, batches=None, shuffle=True):
     else:
         return by_batch(ds, batches, bs, shuffle)
 
+def perplexity(preds):
+    entropy = -(preds.softmax(dim=1) * preds.log_softmax(dim=1)).sum(dim=1)
+    perplexity = entropy.exp()
+    return perplexity.mean()
+
+
 class Callback():
     "Recorder for Trainer class."
     def __init__(self, trainer):
@@ -44,11 +50,15 @@ class Callback():
         self.tlosses = []
         self.lrs =  []
         self.moms = []
+        self.logits = []
+        self.accs = []
 
-    def on_train_step(self, loss, lr, mom):
+    def on_train_step(self, loss, lr, mom, logits, acc):
         self.tlosses.append(loss)
         self.lrs.append(lr)
         self.moms.append(mom)
+        self.logits.append(logits)
+        self.accs.append(acc)
 
     def axes(self, data, filt, dslice):
         filtered = [filt(v) for v in data]
@@ -56,16 +66,45 @@ class Callback():
         xs = np.arange(len(data))[dslice]
         return (xs, ys)
 
-    def loss_plot(self, plots, ymax=None):
+    def batch_plot(self, plots, ylabel, ymax=None, loc="best"):
         fig, ax = plt.subplots()
         for (xs, ys), args in plots:
             ax.plot(xs, ys, **args)
             ax.grid(True)
-            ax.set_ylabel("loss")
+            ax.set_ylabel(ylabel)
             ax.set_xlabel("batch")
-            ax.legend(loc="upper right")
+            ax.legend(loc=loc)
             if ymax is not None:
                 ax.set_ylim([None, ymax])
+
+    def loss_plot(self, plots, **kwargs):
+        self.batch_plot(plots, ylabel="loss", **kwargs)
+
+    def plot_loss(self, start=None, stop=None, step=None, ymax=None, halflife=0):
+        "Plot sampled, filtered, and trimmed training loss."
+        dslice = slice(start, stop, step)
+        plot = [self.axes(self.tlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
+        self.loss_plot( [plot], ymax=ymax)
+
+    def plot_logits(self, start=None, stop=None, step=None, halflife=0):
+        "Plot sampled, filtered, and trimmed magnitude of output logits."
+        dslice = slice(start, stop, step)
+        norms = [ logit.norm(dim=1).mean() for logit in self.logits]
+        plot = [self.axes(norms, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
+        self.batch_plot([plot], ylabel="logit magnitude")
+
+    def plot_perplexity(self, start=None, stop=None, step=None, halflife=0):
+        "Plot sampled, filtered, and trimmed entropy of predictions."
+        dslice = slice(start, stop, step)
+        perps = [ perplexity(logit) for logit in self.logits]
+        plot = [self.axes(perps, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
+        self.batch_plot([plot], ylabel="perplexity")
+
+    def plot_accuracy(self, start=None, stop=None, step=None, halflife=0):
+        "Plot sampled, filtered, and trimmed accuracy of predictions."
+        dslice = slice(start, stop, step)
+        plot = [self.axes(self.accs, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
+        self.batch_plot([plot], ylabel="accuracy")
 
     def plot_schedule(self, start=None, stop=None, step=None, plot_mom=True, plot_elr=False):
         "Plot learning rate and momentum schedule."
@@ -94,11 +133,6 @@ class Callback():
         ax.set_xlabel('batch')
         plt.show()
 
-    def plot_loss(self, start=None, stop=None, step=None, ymax=None, halflife=0):
-        "Plot sampled, filtered, and trimmed training loss."
-        dslice = slice(start, stop, step)
-        plot = [self.axes(self.tlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
-        self.loss_plot( [plot] )
 
 class filter():
     "Exponential moving average filter."
@@ -116,15 +150,23 @@ class ValidationCallback(Callback):
         super().__init__(trainer)
         self.vbatcher = Batcher(self.trainer.validation_set, bs=bs)
         self.vlosses = []
+        self.vlogits = []
+        self.vaccs = []
 
-    def on_train_step(self, loss, lr, mom):
-        super().on_train_step(loss, lr, mom)
+    def on_train_step(self, loss, lr, mom, logits, acc):
+        super().on_train_step(loss, lr, mom, logits, acc)
 
         # Sample the validation loss.
         images, labels = next(iter(self.vbatcher))
-        logits = self.trainer.net(images.cuda())
-        vloss = self.trainer.loss(logits, labels.cuda()).item()
+        vlogits = self.trainer.net(images.cuda())
+        vloss = self.trainer.loss(vlogits, labels.cuda()).item()
         self.vlosses.append(vloss)
+        self.vlogits.append(vlogits.detach())
+
+        with torch.no_grad():
+            correct = (torch.argmax(vlogits, dim=1) == labels.cuda()).sum()
+            accuracy = correct.type(dtype=torch.cuda.FloatTensor) / len(labels)
+            self.vaccs.append(accuracy)
 
     def plot_loss(self, start=None, stop=None, step=None,  halflife=0, include_train=True, ymax=None):
         "Plot sampled, filtered, and trimmed validation loss."
@@ -133,6 +175,29 @@ class ValidationCallback(Callback):
         tplot = [self.axes(self.tlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'}]
         self.loss_plot( [tplot, vplot] if include_train else [ vplot ] )
         plt.show()
+
+    def plot_perplexity(self, start=None, stop=None, step=None, include_train=True, halflife=0):
+        "Plot sampled, filtered, and trimmed entropy of predictions."
+        dslice = slice(start, stop, step)
+
+        vperps = [ perplexity(logit) for logit in self.vlogits]
+        vplot = [self.axes(vperps, filter(halflife), dslice), {'label' : 'valid', 'color': 'C0'} ]
+
+        tperps = [ perplexity(logit) for logit in self.logits]
+        tplot = [self.axes(tperps, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
+
+        plots = [tplot, vplot] if include_train else [ vplot ]
+        self.batch_plot(plots, ylabel="perplexity")
+
+    def plot_accuracy(self, start=None, stop=None, step=None, include_train=True, halflife=0):
+        "Plot sampled, filtered, and trimmed accuracy of predictions."
+        dslice = slice(start, stop, step)
+
+        vplot = [self.axes(self.vaccs, filter(halflife), dslice), {'label' : 'valid', 'color': 'C0'} ]
+        tplot = [self.axes(self.accs, filter(halflife), dslice),  {'label' : 'train', 'color': 'C1'} ]
+
+        plots = [tplot, vplot] if include_train else [ vplot ]
+        self.batch_plot(plots, ylabel="accuracy")
 
 def onehot(target, nlabels):
     return torch.eye(nlabels)[target]
@@ -197,7 +262,11 @@ class Trainer():
             self.optimizer.step()
 
             with torch.no_grad():
-                callback.on_train_step(loss.item(), learning_rate, momentum)
+                correct = (torch.argmax(logits, dim=1) == labels.cuda()).sum()
+                accuracy = correct.type(dtype=torch.cuda.FloatTensor) / bs
+                callback.on_train_step(loss.detach(), learning_rate, momentum,
+                                       logits.detach(), accuracy )
+
             yield(callback)
 
     def train(self, lr, p, epochs=None, batches=None, bs=None, **kwargs):
@@ -303,7 +372,8 @@ def one_cycle(trainer, epochs, bs,
               p_start=0.95, p_middle=0.85, p_end=None,
               pct=0.3,
               batches=None, callback=None, yielder=False,
-              authority=None, **kwargs):
+              authority=None,
+              **kwargs):
     "Trains with cyclic learning rate & momentum."
 
     def schedule(batches, start, middle, end=None, pct=0.3):
@@ -360,7 +430,7 @@ def plot_images(imgs, labels=None):
             ax.annotate(labels[i], xy=(5,0))
     plt.show()
 
-def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
+def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, plot_elr=False, **kwargs):
     "Sweep learning rate for model and display loss."
     lr = exp_interpolator(start, start*10**decades, steps)
     steps = trainer.train_steps(epochs=None, batches=steps, bs=bs, lr=lr, p=p, **kwargs)
@@ -382,9 +452,10 @@ def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
 
     plotit(step.lrs, step.tlosses, "learning rate")
     rates = np.array(step.lrs)
-    eff_rates = rates / (1 - p)
-    plotit(eff_rates, step.tlosses, "eff. learning rate")
-    return step
+    if plot_elr:
+        eff_rates = rates / (1 - p)
+        plotit(eff_rates, step.tlosses, "eff. learning rate")
+        return step
 
 def img_normalize(t):
     c, x, y = t.shape

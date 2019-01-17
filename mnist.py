@@ -164,7 +164,8 @@ class ValidationCallback(Callback):
         self.vlogits.append(vlogits.detach())
 
         with torch.no_grad():
-            accuracy = (torch.argmax(vlogits, dim=1) == labels.cuda()).float().mean()
+            correct = (torch.argmax(vlogits, dim=1) == labels.cuda())
+            accuracy = correct.type(dtype=torch.cuda.FloatTensor).mean()
             self.vaccs.append(accuracy)
 
     def plot_loss(self, start=None, stop=None, step=None,  halflife=0, include_train=True, ymax=None):
@@ -261,7 +262,8 @@ class Trainer():
             self.optimizer.step()
 
             with torch.no_grad():
-                accuracy = (torch.argmax(logits, dim=1) == labels.cuda()).float().mean()
+                correct = (torch.argmax(logits, dim=1) == labels.cuda())
+                accuracy = correct.type(dtype=torch.cuda.FloatTensor).mean()
                 callback.on_train_step(loss.detach(), learning_rate, momentum,
                                        logits.detach(), accuracy )
 

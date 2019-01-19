@@ -45,13 +45,14 @@ class Callback():
     "Recorder for Trainer class."
     def __init__(self, trainer):
         self.trainer = trainer
-
-    def on_train_begin(self):
         self.tlosses = []
         self.lrs =  []
         self.moms = []
         self.logits = []
         self.accs = []
+
+    def on_train_begin(self):
+        pass
 
     def on_train_step(self, loss, lr, mom, logits, acc):
         self.tlosses.append(loss)
@@ -66,7 +67,7 @@ class Callback():
         xs = np.arange(len(data))[dslice]
         return (xs, ys)
 
-    def batch_plot(self, plots, ylabel, ymax=None, loc="best"):
+    def batch_plot(self, plots, ylabel, loc="best", yrange=None):
         fig, ax = plt.subplots()
         for (xs, ys), args in plots:
             ax.plot(xs, ys, **args)
@@ -74,17 +75,17 @@ class Callback():
             ax.set_ylabel(ylabel)
             ax.set_xlabel("batch")
             ax.legend(loc=loc)
-            if ymax is not None:
-                ax.set_ylim([None, ymax])
+            if yrange is not None:
+                ax.set_ylim(yrange)
 
     def loss_plot(self, plots, **kwargs):
         self.batch_plot(plots, ylabel="loss", **kwargs)
 
-    def plot_loss(self, start=None, stop=None, step=None, ymax=None, halflife=0):
+    def plot_loss(self, start=None, stop=None, step=None, halflife=0):
         "Plot sampled, filtered, and trimmed training loss."
         dslice = slice(start, stop, step)
         plot = [self.axes(self.tlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
-        self.loss_plot( [plot], ymax=ymax)
+        self.loss_plot( [plot])
 
     def plot_logits(self, start=None, stop=None, step=None, halflife=0):
         "Plot sampled, filtered, and trimmed magnitude of output logits."
@@ -168,7 +169,7 @@ class ValidationCallback(Callback):
             accuracy = correct.type(dtype=torch.cuda.FloatTensor).mean()
             self.vaccs.append(accuracy)
 
-    def plot_loss(self, start=None, stop=None, step=None,  halflife=0, include_train=True, ymax=None):
+    def plot_loss(self, start=None, stop=None, step=None,  halflife=0, include_train=True):
         "Plot sampled, filtered, and trimmed validation loss."
         dslice = slice(start, stop, step)
         vplot = [self.axes(self.vlosses, filter(halflife), dslice), {'label' : 'valid', 'color': 'C0'} ]
@@ -189,7 +190,7 @@ class ValidationCallback(Callback):
         plots = [tplot, vplot] if include_train else [ vplot ]
         self.batch_plot(plots, ylabel="perplexity")
 
-    def plot_accuracy(self, start=None, stop=None, step=None, include_train=True, halflife=0):
+    def plot_accuracy(self, start=None, stop=None, step=None, include_train=True, halflife=0, yrange=None):
         "Plot sampled, filtered, and trimmed accuracy of predictions."
         dslice = slice(start, stop, step)
 
@@ -197,7 +198,7 @@ class ValidationCallback(Callback):
         tplot = [self.axes(self.accs, filter(halflife), dslice),  {'label' : 'train', 'color': 'C1'} ]
 
         plots = [tplot, vplot] if include_train else [ vplot ]
-        self.batch_plot(plots, ylabel="accuracy")
+        self.batch_plot(plots, ylabel="accuracy", yrange=[None, 1.0])
 
 def onehot(target, nlabels):
     return torch.eye(nlabels)[target]

@@ -51,14 +51,13 @@ class Callback():
         self.logits = []
         self.accs = []
 
-    def on_train_begin(self):
-        pass
+    def on_train_begin(self, bs):
+        self.bs = bs
 
     def on_train_step(self, loss, lr, mom, logits, acc):
         self.tlosses.append(loss)
         self.lrs.append(lr)
         self.moms.append(mom)
-        self.logits.append(logits)
         self.accs.append(acc)
 
     def axes(self, data, filt, dslice):
@@ -94,20 +93,13 @@ class Callback():
         plot = [self.axes(norms, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
         self.batch_plot([plot], ylabel="logit magnitude")
 
-    def plot_perplexity(self, start=None, stop=None, step=None, halflife=0):
-        "Plot sampled, filtered, and trimmed entropy of predictions."
-        dslice = slice(start, stop, step)
-        perps = [ perplexity(logit) for logit in self.logits]
-        plot = [self.axes(perps, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
-        self.batch_plot([plot], ylabel="perplexity")
-
     def plot_accuracy(self, start=None, stop=None, step=None, halflife=0):
         "Plot sampled, filtered, and trimmed accuracy of predictions."
         dslice = slice(start, stop, step)
         plot = [self.axes(self.accs, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
         self.batch_plot([plot], ylabel="accuracy")
 
-    def plot_schedule(self, start=None, stop=None, step=None, plot_mom=True, plot_elr=False):
+    def plot_schedule(self, start=None, stop=None, step=None, plot_mom=False, plot_elr=False, logplot=False):
         "Plot learning rate and momentum schedule."
         dslice = slice(start, stop, step)
         lr = np.array(self.lrs)
@@ -117,11 +109,15 @@ class Callback():
         fig, ax = plt.subplots()
         if plot_elr:
             elrs = self.axes(elr, filter(0), dslice)
-            ax.plot(*elrs, label='ELR', color='C0')
-
+            if logplot:
+                ax.semilogy(*elrs, label='ELR', color='C0')
+            else:
+                ax.plot(*elrs, label='ELR', color='C0')
         lrs = self.axes(lr, filter(0), dslice)
-        ax.plot(*lrs, label='LR', color='C9')
-
+        if logplot:
+            ax.semilogy(*lrs, label='LR', color='C9')
+        else:
+            ax.plot(*lrs, label='LR', color='C9')
         if plot_mom:
             ax2 = ax.twinx()
             moms = self.axes(mom, filter(0), dslice)
@@ -156,6 +152,8 @@ class ValidationCallback(Callback):
 
     def on_train_step(self, loss, lr, mom, logits, acc):
         super().on_train_step(loss, lr, mom, logits, acc)
+
+        self.logits.append(logits)
 
         # Sample the validation loss.
         images, labels = next(iter(self.vbatcher))
@@ -198,7 +196,7 @@ class ValidationCallback(Callback):
         tplot = [self.axes(self.accs, filter(halflife), dslice),  {'label' : 'train', 'color': 'C1'} ]
 
         plots = [tplot, vplot] if include_train else [ vplot ]
-        self.batch_plot(plots, ylabel="accuracy", yrange=[None, 1.0])
+        self.batch_plot(plots, ylabel="accuracy")
 
 def onehot(target, nlabels):
     return torch.eye(nlabels)[target]
@@ -245,7 +243,7 @@ class Trainer():
             callback = Callback(self)
 
         batcher = Batcher(self.train_set, bs, epochs, batches, shuffle=True)
-        callback.on_train_begin()
+        callback.on_train_begin(bs)
 
         for i, (batch, labels) in enumerate(batcher):
             learning_rate=lr(i) if callable(lr) else lr
@@ -382,7 +380,7 @@ def one_cycle(trainer, epochs, bs,
         if end is None: end=start
         n = int(batches * pct)
         f = cos_interpolator(start, middle, n)
-        g = cos_interpolator(middle, end, batches - n)
+        g = exp_interpolator(middle, end, batches - n)
         return fconcat(f, g, n)
 
     if batches is None:

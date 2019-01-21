@@ -2,6 +2,7 @@
 from mnist import *
 import argparse
 import os
+import sys
 
 def populate(npop):
     "Train a population of neural nets and save them to disk."
@@ -57,11 +58,12 @@ def run_trials(npop, committee, trials):
     accs = []
     perm = np.arange(npop)
 
-    for i in range(trials):
+    np.random.shuffle(perm)
 
-        # Randomly choose 'committee' of the model files from the population.
-        np.random.shuffle(perm)
-        subset = [filenames[k] for k in perm[:committee]]
+    for trial in range(trials):
+        ff = trial*committee;
+        tt = (trial+1)*committee
+        subset = [filenames[k] for k in perm[ff : tt]]
 
         # Read those files into models and create classifiers for them.
         classifiers = [ Classifier(read_model(mnist_model(), filename)) for filename in subset ]
@@ -71,7 +73,7 @@ def run_trials(npop, committee, trials):
 
         # See how it does!
         acc = accuracy(voter_s, ds=testset)
-        print(f"{i+1}: Committee of {committee} accuracy: {percent(acc)}")
+        print(f"{trial+1} of {trials}: Committee of {committee} accuracy: {percent(acc)}")
         accs.append(acc)
 
     print(f"mean: {percent(np.mean(accs))} ({np.mean(accs):.6g})" )
@@ -86,13 +88,21 @@ def main():
     parser.add_argument('--committee', type=int, default=5,
                         help="how many nets on a committee")
 
-    parser.add_argument('--trials', type=int, default=10,
+    parser.add_argument('--trials', type=int, default=None,
                         help='number of committees to form from the population')
 
     args = parser.parse_args()
+    max_trials = args.population // args.committee
 
+    trials = max_trials if args.trials is None else args.trials
+    if trials > max_trials:
+        print(f"Max trials for {args.population} population and {args.committee} committee size: {max_trials}",
+              file=sys.stderr)
+        sys.exit(-1)
+    
     populate(args.population)
-    run_trials(args.population, args.committee, args.trials)
+    run_trials(args.population, args.committee, trials)
 
 if __name__ == '__main__':
     main()
+

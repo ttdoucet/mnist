@@ -35,14 +35,8 @@ def Batcher(ds, bs, epochs=None, batches=None, shuffle=True):
     else:
         return by_batch(ds, batches, bs, shuffle)
 
-def perplexity(preds):
-    entropy = -(preds.softmax(dim=1) * preds.log_softmax(dim=1)).sum(dim=1)
-    perplexity = entropy.exp()
-    return perplexity.mean()
-
-
 class Callback():
-    "Recorder for Trainer class."
+    "Recorder for training session."
     def __init__(self, trainer):
         self.trainer = trainer
         self.tlosses = []
@@ -51,8 +45,9 @@ class Callback():
         self.logits = []
         self.accs = []
 
-    def on_train_begin(self, bs):
+    def on_train_begin(self, bs, wd):
         self.bs = bs
+        self.wd = wd
 
     def on_train_step(self, loss, lr, mom, logits, acc):
         self.tlosses.append(loss)
@@ -99,37 +94,32 @@ class Callback():
         plot = [self.axes(self.accs, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
         self.batch_plot([plot], ylabel="accuracy")
 
-    def plot_schedule(self, start=None, stop=None, step=None, plot_mom=False, plot_elr=False, logplot=False):
-        "Plot learning rate and momentum schedule."
+    def plot_lr(self, start=None, stop=None, step=None, logplot=False):
+        "Plot learning rate schedule."
         dslice = slice(start, stop, step)
-        lr = np.array(self.lrs)
-        mom = np.array(self.moms)
-        elr = lr / (1 - mom)
 
         fig, ax = plt.subplots()
-        if plot_elr:
-            elrs = self.axes(elr, filter(0), dslice)
-            if logplot:
-                ax.semilogy(*elrs, label='ELR', color='C0')
-            else:
-                ax.plot(*elrs, label='ELR', color='C0')
-        lrs = self.axes(lr, filter(0), dslice)
+        lrs = self.axes(self.lrs, filter(0), dslice)
         if logplot:
-            ax.semilogy(*lrs, label='LR', color='C9')
+            ax.semilogy(*lrs)
         else:
-            ax.plot(*lrs, label='LR', color='C9')
-        if plot_mom:
-            ax2 = ax.twinx()
-            moms = self.axes(mom, filter(0), dslice)
-            ax2.plot(*moms, label='MOM', color='C6')
-            ax2.legend(loc='center right')
-            ax2.set_ylabel("Momentum", color='C6')
-
-        ax.legend(loc='upper right')
-        ax.set_ylabel('Learning rate', color='C9')
+            ax.plot(*lrs)
+        ax.set_ylabel('Learning rate')
         ax.set_xlabel('batch')
+        ax.grid(True)
         plt.show()
 
+    def plot_mom(self, start=None, stop=None, step=None):
+        "Plot momentum schedule."
+        dslice = slice(start, stop, step)
+
+        fig, ax = plt.subplots()
+        moms = self.axes(self.moms, filter(0), dslice)
+        ax.plot(*moms)
+        ax.set_ylabel('Momentum')
+        ax.set_xlabel('batch')
+        ax.grid(True)
+        plt.show()
 
 class filter():
     "Exponential moving average filter."
@@ -140,6 +130,11 @@ class filter():
     def __call__(self, v):
         self.a = v if self.a is None else self.d * self.a + (1-self.d) * v
         return self.a
+
+def perplexity(preds):
+    entropy = -(preds.softmax(dim=1) * preds.log_softmax(dim=1)).sum(dim=1)
+    perplexity = entropy.exp()
+    return perplexity.mean()
 
 class ValidationCallback(Callback):
     "Callback for sampling validation loss during training."
@@ -235,15 +230,20 @@ class Trainer():
             else:
                 raise KeyError("Cannot find momentum in param_group")
 
-    def train_steps(self, lr, p, epochs=None, batches=None, bs=None,
+    def train_steps(self, lr, p, wd=0, epochs=None, batches=None, bs=None,
                     callback=None, authority=None, **kwargs):
         "Iterator interface to the training loop."
+
+        def wdecay(factor):
+            with torch.no_grad():
+                for m in self.net.parameters():
+                    m.mul_(factor)
 
         if callback is None:
             callback = Callback(self)
 
         batcher = Batcher(self.train_set, bs, epochs, batches, shuffle=True)
-        callback.on_train_begin(bs)
+        callback.on_train_begin(bs, wd)
 
         for i, (batch, labels) in enumerate(batcher):
             learning_rate=lr(i) if callable(lr) else lr
@@ -258,6 +258,8 @@ class Trainer():
             loss = self.loss(logits, labels.cuda())
             self.optimizer.zero_grad()
             loss.backward()
+            if wd:
+                wdecay(1.0 - learning_rate * wd)
             self.optimizer.step()
 
             with torch.no_grad():
@@ -268,11 +270,11 @@ class Trainer():
 
             yield(callback)
 
-    def train(self, lr, p, epochs=None, batches=None, bs=None, **kwargs):
+    def train(self, lr, p, wd=0, epochs=None, batches=None, bs=None, **kwargs):
         "The training loop--calls out to Callback at appropriate points"
         cycles = batches if batches is not None else epochs_to_batches(self.train_set, epochs, bs)
 
-        steps = self.train_steps(lr, p, **dict(kwargs, batches=batches, bs=bs, epochs=epochs))
+        steps = self.train_steps(lr, p, wd, **dict(kwargs, batches=batches, bs=bs, epochs=epochs))
         for step in progress_bar(steps, total=cycles):
             pass
         return step
@@ -314,15 +316,16 @@ class VotingClassifier():
             r += cl.softmax(x)
         return r / len(self.classifiers)
 
-def show_mistakes(classifier, ds, dds=None):
+def show_mistakes(classifier, ds, display_from=None):
     "Displays mistakes made by a classifier on labeled dataset."
-    if dds is None: dds = ds
+    if display_from is None: display_from = ds
     mistakes = [m for m in misclassified(classifier, ds)]
     if len(mistakes) == 0:
         print("No mistakes to show!")
         return
     labels = [f"{ds[index][1]} not {pred}" for (index, pred) in mistakes ]
-    plot_images(torch.cat([dds[index][0] for (index, _)  in mistakes]), labels=labels)
+    plot_images(torch.cat([display_from[index][0] for (index, _)  in mistakes]), labels=labels)
+    return mistakes
 
 def misclassified(classifier, ds, bs=100):
     "Iterates through mistakes made by classifier."
@@ -351,9 +354,6 @@ def accuracy(classifier, ds, bs=100, include_loss=False):
     loss = tloss / n
     return (accuracy, loss) if include_loss else accuracy
 
-def fconcat(f, g, steps):
-    return lambda n: f(n) if n < steps else g(n-steps)
-
 def interpolate(a, b, pct):
     return (1-pct)*a + pct*b
 
@@ -367,41 +367,15 @@ def cos_interpolator(a, b, steps):
 def exp_interpolator(a, b, steps):
     return lambda x : a*(b/a)**(x/steps)   
 
-def one_cycle(trainer, epochs, bs,
-              lr_start, lr_middle, lr_end=None,
-              p_start=0.95, p_middle=0.85, p_end=None,
-              pct=0.3,
-              batches=None, callback=None, yielder=False,
-              authority=None,
-              **kwargs):
-    "Trains with cyclic learning rate & momentum."
-
-    def schedule(batches, start, middle, end=None, pct=0.3):
-        if end is None: end=start
-        n = int(batches * pct)
-        f = cos_interpolator(start, middle, n)
-        g = exp_interpolator(middle, end, batches - n)
-        return fconcat(f, g, n)
-
-    if batches is None:
-        batches = epochs_to_batches(trainer.train_set, epochs, bs)
-
-    p=schedule(batches, p_start, p_middle, p_end, pct)
-    lr=schedule(batches, lr_start, lr_middle, lr_end, pct)
-
-    train = trainer.train_steps if yielder else trainer.train
-    return train(epochs=None, batches=batches, bs=bs, lr=lr, p=p,
-                 authority=authority, callback=callback)
-
 def percent(n):
     return "%.2f%%" % (100 * n)
 
-def show_image(v, title=None, interpolation='bilinear'):
+def show_image(v, title=None, interpolation='bilinear', **kwargs):
     "Displays numpy or torch array as image."
     if type(v) is torch.Tensor:
         v = v.numpy()
     v = np.squeeze(v, axis=0)
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(**kwargs)
     ax.set_title(title)
     ax.set_xticks([])
     ax.set_yticks([])
@@ -430,7 +404,7 @@ def plot_images(imgs, labels=None):
             ax.annotate(labels[i], xy=(5,0))
     plt.show()
 
-def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, plot_elr=False, **kwargs):
+def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     "Sweep learning rate for model and display loss."
     lr = exp_interpolator(start, start*10**decades, steps)
     steps = trainer.train_steps(epochs=None, batches=steps, bs=bs, lr=lr, p=p, **kwargs)
@@ -441,21 +415,13 @@ def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, plot_elr=Fals
             print(f"stopping at step {i}")
             break
         best = min(best, loss)
-
-    def plotit(rates, losses, xlabel):
-        fig, ax = plt.subplots()
-        ax.semilogx(rates, losses, color='C1')
-        ax.set_xlabel(xlabel)
-        ax.set_ylabel("train loss")
-        ax.grid(True)
-        plt.show()
-
-    plotit(step.lrs, step.tlosses, "learning rate")
-    rates = np.array(step.lrs)
-    if plot_elr:
-        eff_rates = rates / (1 - p)
-        plotit(eff_rates, step.tlosses, "eff. learning rate")
-        return step
+    fig, ax = plt.subplots()
+    ax.semilogx(step.lrs, step.tlosses)
+    ax.set_xlabel('learning rate')
+    ax.set_ylabel('train loss')
+    ax.grid(True)
+    plt.show()
+    return step
 
 def img_normalize(t):
     c, x, y = t.shape
@@ -490,35 +456,36 @@ class Flatten(nn.Module):
     def forward(self, x):
         return x.view(x.size()[0], -1)
 
-def mnist_model():
+def mnist_model(d1=128, d2=256, d3=512):
     "Returns an initialized but untrained model for MNIST."
     return nn.Sequential(
-               nn.Conv2d(in_channels=1, out_channels=128, kernel_size=5, padding=2),
+               nn.Conv2d(in_channels=1, out_channels=d1, kernel_size=5, padding=2),
                nn.ReLU(),
 
-               Residual(128),
+               Residual(d1),
                nn.MaxPool2d(2),
-               Residual(128),
+               Residual(d1),
 
-               nn.BatchNorm2d(128),
-               nn.Conv2d(128, 256, 3, padding=1),
+               nn.BatchNorm2d(d1),
+               nn.Conv2d(d1, d2, 3, padding=1),
                nn.ReLU(),
                nn.MaxPool2d(2),
-               Residual(256),
+               Residual(d2),
 
-               nn.BatchNorm2d(256),
-               nn.Conv2d(256, 512, 3, padding=1),
+               nn.BatchNorm2d(d2),
+               nn.Conv2d(d2, d3, 3, padding=1),
                nn.ReLU(),
                nn.MaxPool2d(2, ceil_mode=True),
-               Residual(512),
+               Residual(d3),
 
-               nn.BatchNorm2d(512),
+               nn.BatchNorm2d(d3),
                nn.AvgPool2d(kernel_size=4),
                Flatten(),
 
-               nn.Linear(512,10),
+               nn.Linear(d3,10),
                # Softmax provided during training.
            )
+
 
 def augmented_pipeline():
     rotate_distort = Augmentor.Pipeline()
@@ -549,13 +516,12 @@ def nonaugmented_pipeline():
                           transforms.Lambda(img_normalize)
                         ])
 
-def mnist_trainset(heldout=0, randomize=False, augmented=True):
+def mnist_trainset(heldout=0, augmented=True):
     xform = augmented_pipeline() if augmented else nonaugmented_pipeline()
     train = datasets.MNIST('./data', train=True,  download=True, transform=xform)
 
     indices = np.arange(len(train))
-    if randomize:
-        np.random.shuffle(indices)
+    np.random.shuffle(indices)
     if heldout > 0:
         train_set = torch.utils.data.Subset(train, indices[:-heldout])
         valid_set = torch.utils.data.Subset(train, indices[-heldout:])

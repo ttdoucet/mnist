@@ -4,20 +4,28 @@ import argparse
 import os
 import sys
 
+# probably to the library
+def annihilate(cb, epochs=1):
+    lr_start = cb.lrs[-1]
+    batches = epochs_to_batches(cb.trainer.train_set, epochs, cb.bs)
+    lr = cos_interpolator(lr_start, lr_start/1e3, batches)
+    return cb.trainer.train(lr=lr, p=cb.moms[-1], wd=cb.wd, epochs=epochs, bs=cb.bs, callback=cb)
+
+def train_one(trainset, testset):
+    epochs, lr_max, bs = (10, 4e-4, 100)
+
+    model = mnist_model()
+    trainer = Trainer(model, trainset)
+    lr = exp_interpolator(lr_max, lr_max/10, epochs_to_batches(trainset, epochs, bs))
+    cb = trainer.train(lr, p=0.90, epochs=epochs, bs=bs)
+    annihilate(cb)
+
+    acc, lss = accuracy(Classifier(model), ds=testset, include_loss=True)
+    print(f"TEST: loss = {lss:.3g}, accuracy = {percent(acc)}")
+    return model
+
 def populate(npop):
     "Train a population of neural nets and save them to disk."
-
-    # The one-cycle training schedule to use.
-    lr_eff = 0.001
-    p_max = 0.95
-    p_min = 0.60
-    params = {'epochs': 10, 'bs': 100,
-              'lr_start': (1.0 - p_max) * lr_eff,
-              'lr_middle': (1.0 - p_min) * lr_eff,
-              'lr_end': (1.0 - p_min) * (lr_eff / 25),
-              'p_start' : p_max,
-              'p_middle' : p_min,
-              'p_end' : p_min}
 
     # Our training set, with augmentation.
     trainset = mnist_trainset(heldout=0)
@@ -32,20 +40,8 @@ def populate(npop):
     for filename in filenames:
         if os.path.isfile(filename) == False:
             print(f"TRAINING: {filename}")
-
-            # Take a new untrained MNIST model and wrap
-            # it in a Trainer.
-            trainer = Trainer(mnist_model(), trainset)
-
-            # Train for one cycle using the parameter specified above.
-            one_cycle(trainer, **params)
-
-            # After training, see how this individual net does on the test set.
-            acc, lss = accuracy(Classifier(trainer.net), ds=testset, include_loss=True)
-            print(f"TEST: loss = {lss:.3g}, accuracy = {percent(acc)}")
-
-            # Write the model to disk.
-            save_model(trainer.net, filename)
+            model = train_one(trainset, testset)
+            save_model(model, filename)
 
     print(f"Population of {npop}: training is complete.")
 
@@ -57,13 +53,11 @@ def run_trials(npop, committee, trials):
 
     accs = []
     perm = np.arange(npop)
-
     np.random.shuffle(perm)
 
     for trial in range(trials):
-        ff = trial*committee;
-        tt = (trial+1)*committee
-        subset = [filenames[k] for k in perm[ff : tt]]
+        start = trial * committee;
+        subset = [filenames[k] for k in perm[start : start + committee]]
 
         # Read those files into models and create classifiers for them.
         classifiers = [ Classifier(read_model(mnist_model(), filename)) for filename in subset ]

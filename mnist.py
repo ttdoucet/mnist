@@ -42,18 +42,15 @@ class Callback():
         self.tlosses = []
         self.lrs =  []
         self.moms = []
-        self.logits = []
-        self.accs = []
 
     def on_train_begin(self, bs, wd):
         self.bs = bs
         self.wd = wd
 
-    def on_train_step(self, loss, lr, mom, logits, acc):
+    def on_train_step(self, loss, lr, mom):
         self.tlosses.append(loss)
         self.lrs.append(lr)
         self.moms.append(mom)
-        self.accs.append(acc)
 
     def axes(self, data, filt, dslice):
         filtered = [filt(v) for v in data]
@@ -82,19 +79,6 @@ class Callback():
         plot = [self.axes(self.tlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
         self.loss_plot( [plot], ax=ax)
 
-    def plot_logits(self, start=None, stop=None, step=None, halflife=0, ax=None):
-        "Plot sampled, filtered, and trimmed magnitude of output logits."
-        dslice = slice(start, stop, step)
-        norms = [ logit.norm(dim=1).mean() for logit in self.logits]
-        plot = [self.axes(norms, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
-        self.batch_plot([plot], ylabel="logit magnitude", ax=ax)
-
-    def plot_accuracy(self, start=None, stop=None, step=None, halflife=0, ax=None):
-        "Plot sampled, filtered, and trimmed accuracy of predictions."
-        dslice = slice(start, stop, step)
-        plot = [self.axes(self.accs, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
-        self.batch_plot([plot], ylabel="accuracy", ax=ax)
-
     def plot_lr(self, start=None, stop=None, step=None, logplot=False, ax=None):
         "Plot learning rate schedule."
         dslice = slice(start, stop, step)
@@ -109,20 +93,6 @@ class Callback():
         ax.set_ylabel('Learning rate')
         ax.set_xlabel('batch')
         ax.grid(True)
-        # plt.show()
-
-    def plot_mom(self, start=None, stop=None, step=None, ax=None):
-        "Plot momentum schedule."
-        dslice = slice(start, stop, step)
-
-        if ax is None:
-            fig, ax = plt.subplots()
-        moms = self.axes(self.moms, filter(0), dslice)
-        ax.plot(*moms)
-        ax.set_ylabel('Momentum')
-        ax.set_xlabel('batch')
-        ax.grid(True)
-        # plt.show()
 
 class filter():
     "Exponential moving average filter."
@@ -134,36 +104,21 @@ class filter():
         self.a = v if self.a is None else self.d * self.a + (1-self.d) * v
         return self.a
 
-def perplexity(preds):
-    entropy = -(preds.softmax(dim=1) * preds.log_softmax(dim=1)).sum(dim=1)
-    perplexity = entropy.exp()
-    return perplexity.mean()
-
 class ValidationCallback(Callback):
     "Callback for sampling validation loss during training."
     def __init__(self, trainer, bs=100):
         super().__init__(trainer)
         self.vbatcher = Batcher(self.trainer.validation_set, bs=bs)
         self.vlosses = []
-        self.vlogits = []
-        self.vaccs = []
 
-    def on_train_step(self, loss, lr, mom, logits, acc):
-        super().on_train_step(loss, lr, mom, logits, acc)
-
-        self.logits.append(logits)
+    def on_train_step(self, loss, lr, mom):
+        super().on_train_step(loss, lr, mom)
 
         # Sample the validation loss.
         images, labels = next(iter(self.vbatcher))
         vlogits = self.trainer.net(images.cuda())
         vloss = self.trainer.loss(vlogits, labels.cuda()).item()
         self.vlosses.append(vloss)
-        self.vlogits.append(vlogits.detach())
-
-        with torch.no_grad():
-            correct = (torch.argmax(vlogits, dim=1) == labels.cuda())
-            accuracy = correct.type(dtype=torch.cuda.FloatTensor).mean()
-            self.vaccs.append(accuracy)
 
     def plot_loss(self, start=None, stop=None, step=None,  halflife=0, include_train=True, ax=None):
         "Plot sampled, filtered, and trimmed validation loss."
@@ -171,50 +126,12 @@ class ValidationCallback(Callback):
         vplot = [self.axes(self.vlosses, filter(halflife), dslice), {'label' : 'valid', 'color': 'C0'} ]
         tplot = [self.axes(self.tlosses, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'}]
         self.loss_plot( [tplot, vplot] if include_train else [ vplot ], ax=ax )
-        # plt.show()
-
-    def plot_perplexity(self, start=None, stop=None, step=None, include_train=True, halflife=0, ax=None):
-        "Plot sampled, filtered, and trimmed entropy of predictions."
-        dslice = slice(start, stop, step)
-
-        vperps = [ perplexity(logit) for logit in self.vlogits]
-        vplot = [self.axes(vperps, filter(halflife), dslice), {'label' : 'valid', 'color': 'C0'} ]
-
-        tperps = [ perplexity(logit) for logit in self.logits]
-        tplot = [self.axes(tperps, filter(halflife), dslice), {'label' : 'train', 'color': 'C1'} ]
-
-        plots = [tplot, vplot] if include_train else [ vplot ]
-        self.batch_plot(plots, ylabel="perplexity", ax=ax)
-
-    def plot_accuracy(self, start=None, stop=None, step=None, include_train=True, halflife=0, yrange=None, ax=None):
-        "Plot sampled, filtered, and trimmed accuracy of predictions."
-        dslice = slice(start, stop, step)
-
-        vplot = [self.axes(self.vaccs, filter(halflife), dslice), {'label' : 'valid', 'color': 'C0'} ]
-        tplot = [self.axes(self.accs, filter(halflife), dslice),  {'label' : 'train', 'color': 'C1'} ]
-
-        plots = [tplot, vplot] if include_train else [ vplot ]
-        self.batch_plot(plots, ylabel="accuracy", ax=ax)
-
-def onehot(target, nlabels):
-    return torch.eye(nlabels)[target]
-
-class FullCrossEntropyLoss(nn.Module):
-    "Cross-entropy loss which takes either class labels or prob. dist. as target."
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, input, target):
-        n, nlabels = input.shape
-        if target.dim() == 1:
-            target = onehot(target, nlabels).to(input.device)
-        return  -(F.log_softmax(input, dim=1) * target).sum() / n 
 
 class Trainer():
     "Trains a model using datasets, optimizer, and loss."
     def __init__(self, model, train_set, validation_set=None,
                  optimizer=partial(optim.Adam, betas=(0.9, 0.99)),
-                 loss=FullCrossEntropyLoss):
+                 loss=nn.CrossEntropyLoss):
 
         self.train_set = train_set
         self.validation_set = validation_set
@@ -234,7 +151,7 @@ class Trainer():
                 raise KeyError("Cannot find momentum in param_group")
 
     def train_steps(self, lr, p, wd=0, epochs=None, batches=None, bs=None,
-                    callback=None, authority=None, **kwargs):
+                    callback=None, **kwargs):
         "Iterator interface to the training loop."
 
         def wdecay(factor):
@@ -253,9 +170,6 @@ class Trainer():
             momentum = p(i) if callable(p) else p
             self.set_hyperparameters(learning_rate, momentum)
 
-            if authority is not None:
-                labels = authority(batch)
-
             self.net.train()
             logits = self.net(batch.cuda())
             loss = self.loss(logits, labels.cuda())
@@ -266,10 +180,7 @@ class Trainer():
             self.optimizer.step()
 
             with torch.no_grad():
-                correct = (torch.argmax(logits, dim=1) == labels.cuda())
-                accuracy = correct.type(dtype=torch.cuda.FloatTensor).mean()
-                callback.on_train_step(loss.detach(), learning_rate, momentum,
-                                       logits.detach(), accuracy )
+                callback.on_train_step(loss.detach(), learning_rate, momentum)
 
             yield(callback)
 
@@ -426,13 +337,6 @@ def lr_find(trainer, bs, start=1e-6, decades=7, steps=500, p=0.90, **kwargs):
     plt.show()
     return step
 
-def img_normalize(t):
-    c, x, y = t.shape
-    t = t.view(c, -1)
-    t = t - t.mean(dim=1, keepdim=True)
-    t = t / t.std(dim=1, keepdim=True, unbiased=False)
-    return t.view(c, x, y)
-
 def save_model(model, filename):
     "Write the parameters of a model to a file."
     sd = model.state_dict()
@@ -445,6 +349,7 @@ def read_model(model, filename):
     return model
 
 ## MNIST-specific stuff
+
 class Residual(nn.Module):
     def __init__(self, d):
         super().__init__()
@@ -489,6 +394,12 @@ def mnist_model(d1=128, d2=256, d3=512):
                # Softmax provided during training.
            )
 
+def img_normalize(t):
+    c, x, y = t.shape
+    t = t.view(c, -1)
+    t = t - t.mean(dim=1, keepdim=True)
+    t = t / t.std(dim=1, keepdim=True, unbiased=False)
+    return t.view(c, x, y)
 
 def augmented_pipeline():
     rotate_distort = Augmentor.Pipeline()

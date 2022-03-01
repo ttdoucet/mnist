@@ -245,7 +245,7 @@ def misclassified(classifier, ds, bs=100):
     "Iterates through mistakes made by classifier."
     batcher = Batcher(ds, bs, epochs=1, shuffle=False)
     for n, (batch, labels) in enumerate(batcher):
-        pred = classifier(batch).cpu().numpy()
+        pred = classifier(batch).cpu()
         mistakes = torch.nonzero(pred != labels)
         for i in mistakes:
             yield (int(i) + n*bs, int(pred[i]) )
@@ -257,7 +257,7 @@ def accuracy(classifier, ds, bs=100, include_loss=False):
 
     lossftn = nn.NLLLoss()
     for n, (batch, labels) in enumerate(batcher, 1):
-        predictions = classifier(batch).cpu().numpy()
+        predictions = classifier(batch).cpu()
         correct += (predictions == labels).sum().item()
 
         if include_loss:

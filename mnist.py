@@ -48,7 +48,7 @@ class Callback():
         self.wd = wd
 
     def on_train_step(self, loss, lr, mom):
-        self.tlosses.append(loss)
+        self.tlosses.append(loss.cpu())
         self.lrs.append(lr)
         self.moms.append(mom)
 
@@ -118,7 +118,7 @@ class ValidationCallback(Callback):
         images, labels = next(iter(self.vbatcher))
         vlogits = self.trainer.net(images.cuda())
         vloss = self.trainer.loss(vlogits, labels.cuda()).item()
-        self.vlosses.append(vloss)
+        self.vlosses.append(vloss.cpu())
 
     def plot_loss(self, start=None, stop=None, step=None,  halflife=0, include_train=True, ax=None):
         "Plot sampled, filtered, and trimmed validation loss."

@@ -48,7 +48,7 @@ class Callback():
         self.wd = wd
 
     def on_train_step(self, loss, lr, mom):
-        self.tlosses.append(loss.cpu())
+        self.tlosses.append(loss.cpu().numpy())
         self.lrs.append(lr)
         self.moms.append(mom)
 
@@ -118,7 +118,7 @@ class ValidationCallback(Callback):
         images, labels = next(iter(self.vbatcher))
         vlogits = self.trainer.net(images.cuda())
         vloss = self.trainer.loss(vlogits, labels.cuda()).item()
-        self.vlosses.append(vloss.cpu())
+        self.vlosses.append(vloss.cpu().numpy())
 
     def plot_loss(self, start=None, stop=None, step=None,  halflife=0, include_train=True, ax=None):
         "Plot sampled, filtered, and trimmed validation loss."
@@ -245,7 +245,7 @@ def misclassified(classifier, ds, bs=100):
     "Iterates through mistakes made by classifier."
     batcher = Batcher(ds, bs, epochs=1, shuffle=False)
     for n, (batch, labels) in enumerate(batcher):
-        pred = classifier(batch).cpu()
+        pred = classifier(batch).cpu().numpy()
         mistakes = torch.nonzero(pred != labels)
         for i in mistakes:
             yield (int(i) + n*bs, int(pred[i]) )
@@ -257,7 +257,7 @@ def accuracy(classifier, ds, bs=100, include_loss=False):
 
     lossftn = nn.NLLLoss()
     for n, (batch, labels) in enumerate(batcher, 1):
-        predictions = classifier(batch).cpu()
+        predictions = classifier(batch).cpu().numpy()
         correct += (predictions == labels).sum().item()
 
         if include_loss:
